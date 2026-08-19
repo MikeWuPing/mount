@@ -84,3 +84,4 @@ Shell 的 `map -r` 本质是重连驱动并刷新 Shell 内部映射表。app �
 | 支持更多格式（Linux 主流） | efifs 38 个只读驱动全覆盖（ext4/btrfs/xfs/f2fs/exfat…）；格式名→驱动映射表，主流程零改动扩展 |
 | 自动 map -r | ShellExecute("map -r") 或 SetMap()，退出后映射对 Shell 可见 |
 | 帮助信息展示 Author: Mike Wu | `mount -?` 帮助输出固定含作者署名行 |
+| 帮助/提示/报告信息全英文 | 所有用户可见输出一律英文：标准 UEFI Shell 控制台字体只含拉丁字形，中文 Print 是乱码；串口 DEBUG 日志同用英文便于 grep |

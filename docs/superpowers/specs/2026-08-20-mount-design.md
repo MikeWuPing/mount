@@ -21,6 +21,7 @@ mount 是运行在 UEFI Shell 下的纯命令行工具，对标 Linux `mount`：
 | 卸载 | **v1 不含** | req.md 未要求；UEFI 应用 Exit 后安装的协议与打开的文件句柄留存，"挂完退出、挂载存活"天然成立 |
 | 挂载语义 | **自动挂全部** | `mount -NTFS` 全量重扫，挂载所有发现的 NTFS 卷并报告新增 fsN: |
 | ISO 路径参数 | 必须是当前已可访问卷上的路径（如 `fs0:\images\a.iso`） | 卷还没挂出来就读不到其上的 ISO，属合理限制，帮助中写明 |
+| 输出语言 | **全部用户可见输出（帮助/提示/报告/错误）一律英文** | 标准 UEFI Shell 控制台字体只含拉丁字形，中文 Print 输出为乱码（gufile 能显示中文靠的是 LVGL 自带字库渲染，CLI 无此条件）；串口 DEBUG 日志同用英文，便于 grep |
 
 ## 3. 关键技术事实（已核实）
 
@@ -82,17 +83,17 @@ mount selftest           # 隐藏自检（QEMU 回归断言锚点）
 mount -?                 # 帮助
 ```
 
-帮助输出固定包含作者署名（req.md 第 8 条），样例：
+帮助输出固定包含作者署名（req.md 第 8 条），全部英文（req.md 第 9 条），样例：
 
 ```
-MOUNT - UEFI Shell 挂载工具  版本 1.0.0.12
+MOUNT - UEFI Shell mount tool  v1.0.0.12
 Author: Mike Wu
 
-用法:
-  mount              列出当前 fsN: 映射与支持格式
-  mount -NTFS        加载 NTFS 支持并挂载所有 NTFS 卷
-  mount -ISO <文件>  将 ISO 文件挂载为新卷
-  mount -<格式>      加载指定格式支持（EXT4/BTRFS/XFS...）
+Usage:
+  mount              List current fsN: mappings and supported formats
+  mount -NTFS        Load NTFS support and mount all NTFS volumes
+  mount -ISO <file>  Mount an ISO image file as a new volume
+  mount -<FORMAT>    Load support for FORMAT (EXT4/BTRFS/XFS...)
 ```
 
 "选项即格式名"，代码上是分发表查表，无格式专属分支：
@@ -106,11 +107,11 @@ typedef struct {
 } MOUNT_FORMAT_ENTRY;
 
 STATIC MOUNT_FORMAT_ENTRY mFormats[] = {
-  { L"NTFS",  L"drivers\\ntfs.efi",  L"efifs, 只读", FALSE },
-  { L"EXT4",  L"drivers\\ext2.efi",  L"efifs Ext2 模块通吃 ext2/3/4, 只读", FALSE },
-  { L"BTRFS", L"drivers\\btrfs.efi", L"efifs, 只读, RAID/zstd 卷可能拒读", FALSE },
-  { L"XFS",   L"drivers\\xfs.efi",   L"efifs, 只读, v5/CRC 支持待实测", FALSE },
-  // 新增格式 = 这里加一行 + drivers/ 放一个文件
+  { L"NTFS",  L"drivers\\ntfs.efi",  L"efifs, read-only", FALSE },
+  { L"EXT4",  L"drivers\\ext2.efi",  L"efifs Ext2 covers ext2/3/4, read-only", FALSE },
+  { L"BTRFS", L"drivers\\btrfs.efi", L"efifs, read-only; RAID/zstd volumes may fail", FALSE },
+  { L"XFS",   L"drivers\\xfs.efi",   L"efifs, read-only; v5/CRC support TBD", FALSE },
+  // 新增格式 = 这里加一行 + drivers/ 放一个文件（Notes 会被打印，必须英文）
 };
 ```
 
@@ -132,12 +133,12 @@ STATIC MOUNT_FORMAT_ENTRY mFormats[] = {
 7. 打印报告，退出码 0
 ```
 
-报告样例：
+报告样例（英文输出，串口 DEBUG 同步）：
 
 ```
-MOUNT: 驱动 drivers\ntfs.efi 加载成功
-MOUNT: 新增卷 fs3:  卷标="数据盘"  PciRoot(0x0)/Pci(0x1,0x0)/HD(1,GPT,...)
-MOUNT: map 已刷新，共新增 1 个卷
+MOUNT: driver drivers\ntfs.efi loaded
+MOUNT: new volume fs3:  label="DataDisk"  PciRoot(0x0)/Pci(0x1,0x0)/HD(1,GPT,...)
+MOUNT: map refreshed, 1 new volume(s)
 ```
 
 ## 8. ISO loop 虚拟块设备（技术核心）
@@ -159,7 +160,7 @@ typedef struct {
 
 - **块大小 2048**：光盘 LBA 语义（与 QEMU `-cdrom` 对固件暴露的一致），UdfDxe/iso9660 驱动按此探测。`LastBlock = FileSize/2048 - 1`，非 2048 整数倍截断并警告。
 - **ReadBlocks = SetPosition(LBA×2048) + Read**，无缓存（v1 不优化；浏览目录/读小文件够用，整卷拷 5GB install.wim 慢但正确）。WriteBlocks 恒返回 `EFI_WRITE_PROTECTED`。同步实现、无事件回调，天然避开 TPL 问题。
-- **设备路径**：`FileDevicePath()` 给出"物理盘→FAT 分区→\path\file.iso"节点链，末尾追加带自增 GUID 的 VendorMedia 节点——多 ISO 并存不冲突，`map` 输出可读。
+- **设备路径**：`FileDevicePath()` 给出"物理盘→FAT 分区→\path\file.iso"节点链，末尾追加 VendorMedia 节点（GUID 由运行计数器生成，每实例唯一）——多 ISO 并存不冲突，`map` 输出可读。
 - **注册与触发**：`InstallMultipleProtocolInterfaces(&Handle, DevicePath + BlockIo)` → `ConnectController(Handle, NULL, NULL, TRUE)` 只连新句柄。PartitionDxe 探测（ISO 无分区表则跳过）→ 文件系统驱动 Supported() 认领裸设备（与真实光驱行为一致）。
 - **格式嗅探只提示不拦截**：读 0x8001 查 `"CD001"`（ISO9660 PVD）、sector 256 附近查 UDF anchor（`BEA01`/`NSR0x`）。纯 ISO9660 且 `drivers\iso9660.efi` 缺失时提前提示，仍继续挂载尝试，让驱动栈自己裁决。
 - **多 ISO 并存**：每挂一个建一个 LOOP_DISK 实例，v1 不设人工上限。
@@ -168,16 +169,16 @@ typedef struct {
 
 ## 9. 错误处理与自检
 
-统一约定：失败打印 `MOUNT: 错误 - <原因>（%r）`，返回非零退出码；串口 DEBUG 同步带模块前缀的详细日志。
+统一约定：失败打印 `MOUNT: error - <reason> (%r)`，返回非零退出码；串口 DEBUG 同步带模块前缀的详细日志。所有消息字符串为英文（见 §2 输出语言约束）。
 
 | 阶段 | 失败 | 行为 |
 |---|---|---|
-| 参数解析 | 无此格式名 / -ISO 缺路径 | 打印格式表+用法，退出码 1 |
-| 驱动加载 | drivers\xxx.efi 缺失 | 提示从 efi.akeo.ie 下载放入，退出码 2 |
-| 驱动加载 | LoadImage 返回 SECURITY_VIOLATION | 明确提示 Secure Boot 拦截，退出码 3 |
-| 重扫 | 零新增卷 | "驱动已加载但未发现 X 卷"，退出码 **0**（合法结果） |
-| ISO | 文件不存在/太小（<32KB，放不下 PVD） | 明确报错，退出码 4 |
-| ISO | 纯 ISO9660 且 iso9660.efi 缺失 | 嗅探后提前提示，仍继续挂载尝试，退出码看结果 |
+| 参数解析 | 无此格式名 / -ISO 缺路径 | `MOUNT: error - unknown option/format 'XXX'` + 打印用法，退出码 1 |
+| 驱动加载 | drivers\xxx.efi 缺失 | `MOUNT: error - drivers\xxx.efi not found (get it from efi.akeo.ie)`，退出码 2 |
+| 驱动加载 | LoadImage 返回 SECURITY_VIOLATION | `MOUNT: error - driver blocked by Secure Boot`，退出码 3 |
+| 重扫 | 零新增卷 | `MOUNT: driver loaded, but no NTFS volume found`，退出码 **0**（合法结果） |
+| ISO | 文件不存在/太小（<32KB，放不下 PVD） | `MOUNT: error - cannot open <path>` / `file too small, not a valid ISO`，退出码 4 |
+| ISO | 纯 ISO9660 且 iso9660.efi 缺失 | `MOUNT: warn - ISO9660 detected but drivers\iso9660.efi missing`，仍继续挂载尝试，退出码看结果 |
 
 `mount selftest`：串口输出逐项自检（格式表完整性、驱动文件存在性、BlockIo 安装/卸载往返），`SELFTEST: ALL PASS` 收尾，作 QEMU 无人值守回归断言锚点。
 
@@ -215,3 +216,4 @@ typedef struct {
 | 6. mount -ISO + 自动挂载 | §8 loop 设备 |
 | 7. 更多格式可扩展 | §6 格式分发表、§10 Phase 4 |
 | 8. 帮助信息展示 Author: Mike Wu | §6 帮助输出 |
+| 9. 帮助/提示/报告信息全英文 | §2 输出语言约束、§6/§7/§9 全部输出样例 |
