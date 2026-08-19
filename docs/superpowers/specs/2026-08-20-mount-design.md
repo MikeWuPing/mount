@@ -134,7 +134,8 @@ typedef struct {
   EFI_BLOCK_IO_PROTOCOL    BlockIo;
   EFI_BLOCK_IO_MEDIA       Media;        // BlockSize=2048, ReadOnly=TRUE,
                                          // RemovableMedia=TRUE, LogicalPartition=FALSE
-  EFI_DEVICE_PATH_PROTOCOL *DevicePath;  // ISO 文件路径节点链 + 自增 VendorMedia 节点（保证唯一）
+  EFI_DEVICE_PATH_PROTOCOL *DevicePath;  // ISO 文件路径节点链 + VendorMedia 节点
+                                         // （节点 GUID 由运行计数器生成，每实例唯一）
   EFI_FILE_PROTOCOL        *BackingFile; // ISO 文件句柄，挂载期间保持打开
   EFI_HANDLE               Handle;       // 新建的虚拟盘句柄
   UINT64                   FileSize;
@@ -169,7 +170,7 @@ typedef struct {
 
 ## 10. 验证方案与分期
 
-全部走 emulator-uefi-shell-app 技能的 QEMU 闭环（串口版本断言 + sendkey 脚本 + screendump 截图）：
+全部走 emulator-uefi-shell-app 技能的 QEMU 闭环（串口版本断言 + sendkey 脚本 + screendump 截图）。**v1 范围 = Phase 1~3**（骨架 + NTFS + ISO，即 req.md 第 5/6 条）；Phase 0 是开工前置验证，Phase 4/5 为后续迭代。
 
 - **Phase 0（零代码冒烟）**：手工 QEMU → `load fs0:\drivers\ntfs.efi` + `map -r` 对 NTFS 测试 VHD 验证 efifs 驱动；`-cdrom` 挂 UDF/ISO9660 测试 ISO 验证 UdfDxe 行为。**最大风险（预编译驱动兼容性）最早暴露。**
 - **Phase 1**：MountPkg 骨架 + 构建闭环 + 版本戳 + `mount selftest` 空壳跑通。
