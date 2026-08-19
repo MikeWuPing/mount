@@ -83,3 +83,4 @@ Shell 的 `map -r` 本质是重连驱动并刷新 Shell 内部映射表。app �
 | mount -ISO 挂 ISO 文件 | 虚拟 BlockIo（loop 设备）+ UdfDxe（UDF）/efifs Iso9660.inf（纯 ISO9660 补位） |
 | 支持更多格式（Linux 主流） | efifs 38 个只读驱动全覆盖（ext4/btrfs/xfs/f2fs/exfat…）；格式名→驱动映射表，主流程零改动扩展 |
 | 自动 map -r | ShellExecute("map -r") 或 SetMap()，退出后映射对 Shell 可见 |
+| 帮助信息展示 Author: Mike Wu | `mount -?` 帮助输出固定含作者署名行 |

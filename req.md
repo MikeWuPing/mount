@@ -6,3 +6,4 @@
 5. 支持Windows的NTFS，可以用开源的实现，可以是只读的。可以达成类似 mount -NTFS，就会加入NTFS的支持，然后自动进行类似map -r的动作，挂载出NTFS的 fs。
 6. 支持ISO的格式，如在U盘中copy进来一个安装iso，我们用mount -ISO 这个文件，就可以把它也mount上了，也是自动进行类似map -r的动作，挂载出改ISO的 fs。
 7. 可以支持更多格式，如Linux下的主流格式（ext4、btrfs、xfs等），命令形态沿用mount -<格式>，格式支持要可扩展。
+8. 帮助信息中需要展示：Author: Mike Wu。

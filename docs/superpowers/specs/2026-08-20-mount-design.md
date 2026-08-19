@@ -82,6 +82,19 @@ mount selftest           # 隐藏自检（QEMU 回归断言锚点）
 mount -?                 # 帮助
 ```
 
+帮助输出固定包含作者署名（req.md 第 8 条），样例：
+
+```
+MOUNT - UEFI Shell 挂载工具  版本 1.0.0.12
+Author: Mike Wu
+
+用法:
+  mount              列出当前 fsN: 映射与支持格式
+  mount -NTFS        加载 NTFS 支持并挂载所有 NTFS 卷
+  mount -ISO <文件>  将 ISO 文件挂载为新卷
+  mount -<格式>      加载指定格式支持（EXT4/BTRFS/XFS...）
+```
+
 "选项即格式名"，代码上是分发表查表，无格式专属分支：
 
 ```c
@@ -201,3 +214,4 @@ typedef struct {
 | 5. mount -NTFS + 自动 map -r | §4 架构、§7 流程 |
 | 6. mount -ISO + 自动挂载 | §8 loop 设备 |
 | 7. 更多格式可扩展 | §6 格式分发表、§10 Phase 4 |
+| 8. 帮助信息展示 Author: Mike Wu | §6 帮助输出 |
