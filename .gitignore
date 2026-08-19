@@ -1,0 +1,16 @@
+# 构建产物与运行证据（构建时确定性再生，不入库）
+snapshot/
+run_logs/
+qemu_disk/expected_version.txt
+qemu_disk/mount.efi
+MountPkg/Application/Mount/Version.h
+
+# 测试资产（test_images/ 脚本生成，产物不入库）
+test_images/*.vhd
+test_images/*.vhdx
+test_images/*.iso
+test_images/*.img
+
+# 临时文件
+*.ppm
+*.log
