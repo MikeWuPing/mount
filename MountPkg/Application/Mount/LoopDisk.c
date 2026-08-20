@@ -399,7 +399,9 @@ LoopCreate (
 
   // Device path: the ISO file's own device path + a unique vendor-media
   // node, so each loop instance is distinct and `map` output stays
-  // readable (spec section 8).
+  // readable (spec section 8). ZeroMem first: only parts of the GUID are
+  // assigned below, the rest must be the spec'd base (0x00), not stack.
+  ZeroMem (&VendorNode, sizeof (VendorNode));
   VendorNode.Header.Type    = MEDIA_DEVICE_PATH;
   VendorNode.Header.SubType = MEDIA_VENDOR_DP;   // 0x03
   SetDevicePathNodeLength (&VendorNode.Header, sizeof (VendorNode));
@@ -475,7 +477,9 @@ MountRunIso (
   MapSnapshotFsHandles (&OldFs, &OldCount);
 
   Status = LoopCreate (IsoPath, &Disk);
-  if (EFI_ERROR (Status)) {
+  // LoopCreate also returns STATUS_ISO_ERROR (a plain small integer with
+  // no EFI error bit) -- test against EFI_SUCCESS, not EFI_ERROR().
+  if (Status != EFI_SUCCESS) {
     if (OldFs != NULL) {
       FreePool (OldFs);
     }
@@ -569,7 +573,8 @@ LoopDiskSelfTest (
   // blocks back through BlockIo; exercise the BlockIo2 path on block 1.
   Ok = FALSE;
   Status = LoopCreate (LOOP_SELFTEST_PATH, &Disk);
-  if (!EFI_ERROR (Status)) {
+  // STATUS_ISO_ERROR carries no EFI error bit: compare EFI_SUCCESS.
+  if (Status == EFI_SUCCESS) {
     Ok = TRUE;
     Size   = LOOP_BLOCK_SIZE;
     Status = Disk->BlockIo.ReadBlocks (&Disk->BlockIo, LOOP_MEDIA_ID, 0, Size, ReadBack);
