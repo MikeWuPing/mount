@@ -253,8 +253,8 @@ MountBuildDriverDevicePath (
 
 // Dedupe: any loaded image whose FilePath device path text ends with the
 // driver's relative path counts as already loaded (exact case: the table
-// built every path this flow loads).
-STATIC
+// built every path this flow loads). Exported for LoopDisk's ISO9660
+// missing-driver warning.
 BOOLEAN
 MountDriverLoaded (
   IN CONST CHAR16  *DriverFile

@@ -1,8 +1,8 @@
 /** @file
   SelfTest -- hidden `mount selftest` regression anchor (spec s9).
 
-  Items 1-2 land here (format table integrity, driver file presence);
-  Task 9 adds the loop BlockIo install/read/uninstall roundtrip.
+  Items: format table integrity, driver file presence, and the loop
+  BlockIo install/read/uninstall roundtrip (LoopDiskSelfTest).
 
   Copyright (c) 2026, Mike Wu. All rights reserved.
 **/
@@ -12,6 +12,7 @@
 #include <Library/BaseLib.h>
 #include <Library/DebugLib.h>
 #include "FsDriver.h"
+#include "LoopDisk.h"
 
 STATIC UINTN mFailures;
 
@@ -72,7 +73,12 @@ MountSelfTest (
   }
   Report (L"driver files present", All);
 
-  // (Task 9 adds: loop BlockIo install/read/uninstall roundtrip)
+  // 3. Loop block device roundtrip: temp 16-block file on fs0:, install
+  // the loop BlockIo/BlockIo2 over it, read both marker blocks back
+  // (BlockIo + BlockIo2 paths), verify the read-only contract, uninstall.
+  Status = LoopDiskSelfTest ();
+  Report (L"loop blockio roundtrip", !EFI_ERROR (Status));
+
   if (mFailures == 0) {
     Print (L"SELFTEST: ALL PASS\n");
     DEBUG ((DEBUG_INFO, "%a\n", MOUNT_SELFTEST_OK));

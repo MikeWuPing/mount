@@ -47,6 +47,14 @@ MountOpenDriverFile (
   OUT EFI_FILE_PROTOCOL  **FileHandle
   );
 
+// Dedupe: TRUE when a loaded image exists whose FilePath text ends with
+// DriverFile on a path-component boundary. Used by the -<FORMAT> flow and
+// by LoopDisk's ISO9660 missing-driver warning.
+BOOLEAN
+MountDriverLoaded (
+  IN CONST CHAR16  *DriverFile
+  );
+
 // Full `mount -<FORMAT>` flow: LoadImage/StartImage the format's driver
 // (deduped by loaded-image path suffix), ConnectController rescan,
 // "map -r" Shell refresh, new-volume report. Returns EFI_SUCCESS even
