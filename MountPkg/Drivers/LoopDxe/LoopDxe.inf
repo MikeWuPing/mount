@@ -1,0 +1,47 @@
+## @file
+# LoopDxe -- resident loop-device factory driver. Loaded once by mount.efi
+# (LoadImage/StartImage, deduped by LocateProtocol); stays resident as a
+# boot-service driver so its loop devices outlive the application.
+#
+# Copyright (c) 2026, Mike Wu. All rights reserved.
+#
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = LoopDxe
+  FILE_GUID                      = 2E7C9A14-5B3D-4F6E-8A1C-0D9B2E4F6A85
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 0.1
+  ENTRY_POINT                    = LoopDxeEntry
+
+[BuildOptions]
+  MSFT:*_*_*_CC_FLAGS = /DEDK2_BUILD /utf-8 /wd4819 /wd4100
+
+[Sources]
+  LoopDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MountPkg/MountPkg.dec
+
+[Protocols]
+  gEfiDevicePathProtocolGuid          ## PRODUCES
+  gEfiBlockIoProtocolGuid             ## PRODUCES
+  gEfiBlockIo2ProtocolGuid            ## PRODUCES
+  gMountLoopFactoryProtocolGuid       ## PRODUCES
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiLib
+  BaseLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  DebugLib
+  UefiBootServicesTableLib
+  DevicePathLib
+
+# Never dispatched by the DXE dispatcher (mount.efi LoadImages it); the
+# build still requires a [Depex] section for DXE_DRIVER modules.
+[Depex]
+  TRUE

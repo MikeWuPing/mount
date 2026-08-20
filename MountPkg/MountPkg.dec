@@ -13,3 +13,8 @@
 
 [Includes]
   Include
+
+[Protocols]
+  ## Loop-device factory produced by LoopDxe, consumed by mount.efi.
+  ## Include/Protocol/MountLoopFactory.h
+  gMountLoopFactoryProtocolGuid = { 0x8F3E2A41, 0x6B7C, 0x4D5E, { 0x9A, 0x1B, 0x2C, 0x3D, 0x4E, 0x5F, 0x6A, 0x7B } }

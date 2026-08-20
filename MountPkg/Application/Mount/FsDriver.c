@@ -229,8 +229,8 @@ MountOpenDriverFile (
 }
 
 // Build a full device path (volume device path + filepath node) for a
-// DriverFile relative to the mount.efi directory, for LoadImage().
-STATIC
+// DriverFile relative to the mount.efi directory, for LoadImage(). Used
+// by the -<FORMAT> flow and by LoopDisk's loop-factory load.
 EFI_STATUS
 MountBuildDriverDevicePath (
   IN  CONST CHAR16              *DriverFile,

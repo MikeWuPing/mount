@@ -55,6 +55,15 @@ MountDriverLoaded (
   IN CONST CHAR16  *DriverFile
   );
 
+// Build a full device path (volume device path + filepath node) for a
+// DriverFile relative to the mount.efi directory, for LoadImage().
+// Callee-allocated (FileDevicePath); the caller frees it.
+EFI_STATUS
+MountBuildDriverDevicePath (
+  IN  CONST CHAR16              *DriverFile,
+  OUT EFI_DEVICE_PATH_PROTOCOL  **DevicePath
+  );
+
 // Full `mount -<FORMAT>` flow: LoadImage/StartImage the format's driver
 // (deduped by loaded-image path suffix), ConnectController rescan,
 // "map -r" Shell refresh, new-volume report. Returns EFI_SUCCESS even

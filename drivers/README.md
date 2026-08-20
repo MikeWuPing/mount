@@ -44,3 +44,11 @@ f75d595d8037d0f5612b4eaec2d6f4a581353530a792d904c2c6988d358e07f6 *xfs_x64.efi
 - `ext2_x64.efi` is the GRUB ext2 module; it also covers ext3/ext4 read-only.
 - `udf_x64.efi` overlaps with edk2's UdfDxe; only one should bind a given UDF
   volume (deployment avoids loading both onto the same handle).
+
+## loop_x64.efi is NOT from efifs
+
+The `drivers\loop_x64.efi` that lands in `qemu_disk\drivers\` at build time is
+the project's own LoopDxe driver (source: `MountPkg/Drivers/LoopDxe/`, built by
+`tools/Build-Mount.ps1` and renamed to `loop_x64.efi`). It is the resident
+loop-device factory behind `mount -ISO` and shares MountPkg's license; it is
+not an efifs binary and is never committed to this directory.

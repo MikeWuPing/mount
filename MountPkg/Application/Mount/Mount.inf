@@ -35,9 +35,9 @@
   gEfiSimpleFileSystemProtocolGuid    ## SOMETIMES_CONSUMES
   gEfiLoadedImageProtocolGuid         ## SOMETIMES_CONSUMES
   gEfiShellProtocolGuid               ## SOMETIMES_CONSUMES
-  gEfiDevicePathProtocolGuid          ## SOMETIMES_PRODUCES
-  gEfiBlockIoProtocolGuid             ## SOMETIMES_PRODUCES
-  gEfiBlockIo2ProtocolGuid            ## SOMETIMES_PRODUCES
+  gEfiBlockIoProtocolGuid             ## SOMETIMES_CONSUMES
+  gEfiBlockIo2ProtocolGuid            ## SOMETIMES_CONSUMES
+  gMountLoopFactoryProtocolGuid       ## SOMETIMES_CONSUMES
 
 [Guids]
   gEfiFileSystemVolumeLabelInfoIdGuid ## SOMETIMES_CONSUMES

@@ -1,18 +1,13 @@
 /** @file
-  LoopDisk -- virtual block device over a file (Linux loop device analog).
+  LoopDisk (application side) -- `mount -ISO <file>` orchestration.
 
-  A LOOP_DISK carries a read-only 2048-byte-block EFI_BLOCK_IO_PROTOCOL
-  plus the matching EFI_BLOCK_IO2_PROTOCOL on a fresh handle; reads are
-  forwarded to SetPosition/Read on the backing EFI_FILE_PROTOCOL. The
-  device path is the image file's own device path plus a unique
-  vendor-media node, so several loop devices coexist and `map` output
-  stays readable.
-
-  BlockIo2 is installed because this OVMF's efifs drivers only bind
-  "modern-stack" handles (Task 4 evidence: ATAPI/IDE handles with
-  BlockIo2/DiskIo2 bind, old-style BlockIo-only virtio handles never do).
-  efifs itself opens DiskIo/DiskIo2 (pbatard/efifs src/driver.c
-  FSBindingSupported), which DiskIoDxe produces from our BlockIo/BlockIo2.
+  The loop device itself lives in the resident LoopDxe driver
+  (drivers\loop_x64.efi, MOUNT_LOOP_FACTORY_PROTOCOL); this file only
+  validates the image, resolves its device path, makes sure the factory
+  driver is loaded, and asks it to create the device. Splitting it this
+  way is what lets a mount survive mount.efi's exit: an application's
+  protocol callbacks die with its image (Task 9 measured the #UD), a
+  boot-service driver's do not.
 
   Path resolution goes through EFI_SHELL_PROTOCOL.GetDevicePathFromFilePath
   -- the same resolver ShellOpenFileByName uses internally -- so both
@@ -34,196 +29,84 @@
 #include <Protocol/BlockIo.h>
 #include <Protocol/BlockIo2.h>
 #include <Protocol/Shell.h>
+#include <Protocol/MountLoopFactory.h>
 #include <Guid/FileInfo.h>
 #include "LoopDisk.h"
 #include "FsDriver.h"
 #include "MapReport.h"
 
-#define LOOP_BLOCK_SIZE  2048
-#define LOOP_MEDIA_ID    0x4D4F554E          // "MOUN"
-#define LOOP_MIN_SIZE    (16 * LOOP_BLOCK_SIZE)  // PVD at LBA16 must fit
-
-typedef struct {
-  EFI_BLOCK_IO_PROTOCOL    BlockIo;        // first member: This -> LOOP_DISK cast
-  EFI_BLOCK_IO_MEDIA       Media;          // BlockIo.Media/BlockIo2.Media point here
-  EFI_BLOCK_IO2_PROTOCOL   BlockIo2;
-  EFI_DEVICE_PATH_PROTOCOL *DevicePath;
-  EFI_FILE_PROTOCOL        *BackingFile;   // SHELL_FILE_HANDLE is EFI_FILE_PROTOCOL*
-  EFI_HANDLE               Handle;
-  UINT64                   LastBlock;
-  UINT32                   Seq;
-} LOOP_DISK;
-
-typedef struct {
-  EFI_DEVICE_PATH_PROTOCOL  Header;
-  EFI_GUID                  Guid;
-} LOOP_VENDOR_MEDIA_NODE;
-
-STATIC UINT32  mLoopSeq = 0;
+#define LOOP_BLOCK_SIZE   2048
+#define LOOP_MIN_SIZE     (16 * LOOP_BLOCK_SIZE)  // PVD at LBA16 must fit
+#define LOOP_DRIVER_FILE  L"drivers\\loop_x64.efi"
 
 // ---------------------------------------------------------------------------
-// BlockIo (blocking) -- This IS the LOOP_DISK pointer (BlockIo is member 0).
+// Factory locate/load
 // ---------------------------------------------------------------------------
 
+// Locate the resident loop factory, loading drivers\loop_x64.efi (relative
+// to the mount.efi directory) when no instance exists yet. Dedupe is by
+// protocol GUID, not file path: a second `mount -ISO` reuses the resident
+// driver, and each of its loop devices gets a unique vendor node from the
+// driver-global sequence counter.
 STATIC
 EFI_STATUS
-EFIAPI
-LoopReset (
-  IN EFI_BLOCK_IO_PROTOCOL  *This,
-  IN BOOLEAN                ExtendedVerification
+MountLoopFactoryGet (
+  OUT MOUNT_LOOP_FACTORY_PROTOCOL  **Factory
   )
 {
-  return EFI_SUCCESS;
-}
+  EFI_STATUS                Status;
+  EFI_DEVICE_PATH_PROTOCOL  *Dp;
+  EFI_HANDLE                Image;
 
-STATIC
-EFI_STATUS
-EFIAPI
-LoopReadBlocks (
-  IN EFI_BLOCK_IO_PROTOCOL  *This,
-  IN UINT32                 MediaId,
-  IN EFI_LBA                Lba,
-  IN UINTN                  BufferSize,
-  OUT VOID                  *Buffer
-  )
-{
-  LOOP_DISK   *Disk = (LOOP_DISK *)This;
-  EFI_STATUS  Status;
-  UINTN       Size = BufferSize;
+  Status = gBS->LocateProtocol (
+                  &gMountLoopFactoryProtocolGuid,
+                  NULL,
+                  (VOID **)Factory
+                  );
+  if (!EFI_ERROR (Status)) {
+    return EFI_SUCCESS;
+  }
 
-  if ((MediaId != Disk->Media.MediaId) || (Buffer == NULL) ||
-      ((BufferSize % LOOP_BLOCK_SIZE) != 0))
-  {
-    return EFI_INVALID_PARAMETER;
-  }
-  if (((UINT64)Lba > Disk->LastBlock) ||
-      ((UINT64)(BufferSize / LOOP_BLOCK_SIZE) > (Disk->LastBlock + 1 - (UINT64)Lba)))
-  {
-    return EFI_INVALID_PARAMETER;
-  }
-  Status = Disk->BackingFile->SetPosition (
-                                Disk->BackingFile,
-                                MultU64x32 ((UINT64)Lba, LOOP_BLOCK_SIZE)
-                                );
+  Status = MountBuildDriverDevicePath (LOOP_DRIVER_FILE, &Dp);
   if (EFI_ERROR (Status)) {
+    Print (L"MOUNT: error - cannot locate self directory (%r)\n", Status);
     return Status;
   }
-  Status = Disk->BackingFile->Read (Disk->BackingFile, &Size, Buffer);
+  Status = gBS->LoadImage (FALSE, gImageHandle, Dp, NULL, 0, &Image);
+  FreePool (Dp);
   if (EFI_ERROR (Status)) {
-    return Status;
+    if (Status == EFI_SECURITY_VIOLATION) {
+      Print (L"MOUNT: error - %s blocked by Secure Boot\n", LOOP_DRIVER_FILE);
+      return STATUS_SECURE_BOOT;
+    }
+    Print (L"MOUNT: error - cannot load %s (%r)\n", LOOP_DRIVER_FILE, Status);
+    DEBUG ((DEBUG_INFO, "MOUNT: LoadImage %S failed (%r)\n", LOOP_DRIVER_FILE, Status));
+    return STATUS_DRIVER_MISSING;
   }
-  // A short read means the backing file shrank under us: device error.
-  return (Size == BufferSize) ? EFI_SUCCESS : EFI_DEVICE_ERROR;
-}
+  // A driver image returns from StartImage once its entry point has
+  // installed the factory; it stays resident, unlike an application.
+  Status = gBS->StartImage (Image, NULL, NULL);
+  if (EFI_ERROR (Status)) {
+    Print (L"MOUNT: error - StartImage %s failed (%r)\n", LOOP_DRIVER_FILE, Status);
+    gBS->UnloadImage (Image);
+    return STATUS_DRIVER_MISSING;
+  }
+  DEBUG ((DEBUG_INFO, "MOUNT: driver %S loaded\n", LOOP_DRIVER_FILE));
 
-STATIC
-EFI_STATUS
-EFIAPI
-LoopWriteBlocks (
-  IN EFI_BLOCK_IO_PROTOCOL  *This,
-  IN UINT32                 MediaId,
-  IN EFI_LBA                Lba,
-  IN UINTN                  BufferSize,
-  IN CONST VOID             *Buffer
-  )
-{
-  return EFI_WRITE_PROTECTED;
-}
-
-STATIC
-EFI_STATUS
-EFIAPI
-LoopFlushBlocks (
-  IN EFI_BLOCK_IO_PROTOCOL  *This
-  )
-{
+  Status = gBS->LocateProtocol (
+                  &gMountLoopFactoryProtocolGuid,
+                  NULL,
+                  (VOID **)Factory
+                  );
+  if (EFI_ERROR (Status)) {
+    Print (L"MOUNT: error - %s published no loop factory\n", LOOP_DRIVER_FILE);
+    return STATUS_DRIVER_MISSING;
+  }
   return EFI_SUCCESS;
 }
 
 // ---------------------------------------------------------------------------
-// BlockIo2 -- recover LOOP_DISK via BASE_CR. Always blocking internally;
-// on success with a non-NULL event the token is completed synchronously
-// (UEFI allows a blocking engine for BlockIo2). Per spec the event is NOT
-// signaled on error returns.
-// ---------------------------------------------------------------------------
-
-STATIC
-VOID
-LoopCompleteToken (
-  IN EFI_BLOCK_IO2_TOKEN  *Token,
-  IN EFI_STATUS           Status
-  )
-{
-  if (Token == NULL) {
-    return;
-  }
-  Token->TransactionStatus = Status;
-  if (!EFI_ERROR (Status) && (Token->Event != NULL)) {
-    gBS->SignalEvent (Token->Event);
-  }
-}
-
-STATIC
-EFI_STATUS
-EFIAPI
-LoopResetEx (
-  IN EFI_BLOCK_IO2_PROTOCOL  *This,
-  IN BOOLEAN                 ExtendedVerification
-  )
-{
-  return EFI_SUCCESS;
-}
-
-STATIC
-EFI_STATUS
-EFIAPI
-LoopReadBlocksEx (
-  IN     EFI_BLOCK_IO2_PROTOCOL  *This,
-  IN     UINT32                  MediaId,
-  IN     EFI_LBA                 Lba,
-  IN OUT EFI_BLOCK_IO2_TOKEN     *Token,
-  IN     UINTN                   BufferSize,
-  OUT    VOID                    *Buffer
-  )
-{
-  LOOP_DISK   *Disk = BASE_CR (This, LOOP_DISK, BlockIo2);
-  EFI_STATUS  Status;
-
-  Status = LoopReadBlocks (&Disk->BlockIo, MediaId, Lba, BufferSize, Buffer);
-  LoopCompleteToken (Token, Status);
-  return Status;
-}
-
-STATIC
-EFI_STATUS
-EFIAPI
-LoopWriteBlocksEx (
-  IN     EFI_BLOCK_IO2_PROTOCOL  *This,
-  IN     UINT32                  MediaId,
-  IN     EFI_LBA                 Lba,
-  IN OUT EFI_BLOCK_IO2_TOKEN     *Token,
-  IN     UINTN                   BufferSize,
-  IN     CONST VOID              *Buffer
-  )
-{
-  LoopCompleteToken (Token, EFI_WRITE_PROTECTED);
-  return EFI_WRITE_PROTECTED;
-}
-
-STATIC
-EFI_STATUS
-EFIAPI
-LoopFlushBlocksEx (
-  IN     EFI_BLOCK_IO2_PROTOCOL  *This,
-  IN OUT EFI_BLOCK_IO2_TOKEN     *Token
-  )
-{
-  LoopCompleteToken (Token, EFI_SUCCESS);
-  return EFI_SUCCESS;
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
+// Image validation helpers (unchanged from the app-resident design)
 // ---------------------------------------------------------------------------
 
 // Sniff the image: ISO9660 PVD "CD001" at sector 16 +1; UDF bridge
@@ -287,27 +170,30 @@ MountIsoFileDevicePath (
   return Shell->GetDevicePathFromFilePath (IsoPath);
 }
 
-// Install the loop block device for IsoPath. On success *DiskOut owns the
-// open backing file and the installed protocols; LoopDestroy reverses both.
+// Validate IsoPath and ask the resident factory to create the loop device
+// over it. On success *LoopHandle owns the mount (the factory owns the open
+// backing file) and *Iso9660/*Udf carry the content sniff; on failure
+// everything touched here is closed/freed.
 STATIC
 EFI_STATUS
 LoopCreate (
   IN CONST CHAR16  *IsoPath,
-  OUT LOOP_DISK    **DiskOut
+  OUT EFI_HANDLE   *LoopHandle,
+  OUT BOOLEAN      *Iso9660,
+  OUT BOOLEAN      *Udf
   )
 {
-  EFI_STATUS               Status;
-  LOOP_DISK                *Disk;
-  SHELL_FILE_HANDLE        File;
-  EFI_FILE_INFO            *Info;
-  UINTN                    InfoSize;
-  EFI_DEVICE_PATH_PROTOCOL *FileDp;
-  LOOP_VENDOR_MEDIA_NODE   VendorNode;
-  BOOLEAN                  Iso9660;
-  BOOLEAN                  Udf;
-  UINT64                   FileSize;
+  EFI_STATUS                  Status;
+  SHELL_FILE_HANDLE           File;
+  EFI_FILE_INFO               *Info;
+  UINTN                       InfoSize;
+  EFI_DEVICE_PATH_PROTOCOL    *FileDp;
+  MOUNT_LOOP_FACTORY_PROTOCOL *Factory;
+  UINT64                      FileSize;
 
-  *DiskOut = NULL;
+  *LoopHandle = NULL;
+  *Iso9660    = FALSE;
+  *Udf        = FALSE;
 
   Status = ShellOpenFileByName (IsoPath, &File, EFI_FILE_MODE_READ, 0);
   if (EFI_ERROR (Status)) {
@@ -351,11 +237,8 @@ LoopCreate (
     Print (L"MOUNT: warn - size not multiple of 2048, tail ignored\n");
   }
 
-  LoopSniff ((EFI_FILE_PROTOCOL *)File, &Iso9660, &Udf);
-  if (Iso9660 && !Udf && !MountDriverLoaded (L"drivers\\iso9660_x64.efi")) {
-    Print (L"MOUNT: warn - ISO9660 detected but drivers\\iso9660_x64.efi missing\n");
-  }
-  DEBUG ((DEBUG_INFO, "MOUNT: sniff iso9660=%d udf=%d\n", Iso9660, Udf));
+  LoopSniff ((EFI_FILE_PROTOCOL *)File, Iso9660, Udf);
+  DEBUG ((DEBUG_INFO, "MOUNT: sniff iso9660=%d udf=%d\n", *Iso9660, *Udf));
 
   FileDp = MountIsoFileDevicePath (IsoPath);
   if (FileDp == NULL) {
@@ -364,102 +247,29 @@ LoopCreate (
     return STATUS_ISO_ERROR;
   }
 
-  Disk = AllocateZeroPool (sizeof (*Disk));
-  if (Disk == NULL) {
-    FreePool (FileDp);
-    ShellCloseFile (&File);
-    return EFI_OUT_OF_RESOURCES;
+  Status = MountLoopFactoryGet (&Factory);
+  if (Status == EFI_SUCCESS) {
+    Status = Factory->Create (
+                        Factory,
+                        (EFI_FILE_PROTOCOL *)File,
+                        FileDp,
+                        FileSize / LOOP_BLOCK_SIZE - 1,
+                        LoopHandle
+                        );
   }
-  Disk->BackingFile = (EFI_FILE_PROTOCOL *)File;
-  Disk->LastBlock   = FileSize / LOOP_BLOCK_SIZE - 1;
-  Disk->Seq         = ++mLoopSeq;
-
-  Disk->Media.MediaId          = LOOP_MEDIA_ID;
-  Disk->Media.RemovableMedia   = TRUE;
-  Disk->Media.MediaPresent     = TRUE;
-  Disk->Media.LogicalPartition = FALSE;
-  Disk->Media.ReadOnly         = TRUE;
-  Disk->Media.WriteCaching     = FALSE;
-  Disk->Media.BlockSize        = LOOP_BLOCK_SIZE;
-  Disk->Media.IoAlign          = 0;
-  Disk->Media.LastBlock        = Disk->LastBlock;
-
-  Disk->BlockIo.Revision    = EFI_BLOCK_IO_PROTOCOL_REVISION;
-  Disk->BlockIo.Media       = &Disk->Media;
-  Disk->BlockIo.Reset       = LoopReset;
-  Disk->BlockIo.ReadBlocks  = LoopReadBlocks;
-  Disk->BlockIo.WriteBlocks = LoopWriteBlocks;
-  Disk->BlockIo.FlushBlocks = LoopFlushBlocks;
-
-  Disk->BlockIo2.Media         = &Disk->Media;
-  Disk->BlockIo2.Reset         = LoopResetEx;
-  Disk->BlockIo2.ReadBlocksEx  = LoopReadBlocksEx;
-  Disk->BlockIo2.WriteBlocksEx = LoopWriteBlocksEx;
-  Disk->BlockIo2.FlushBlocksEx = LoopFlushBlocksEx;
-
-  // Device path: the ISO file's own device path + a unique vendor-media
-  // node, so each loop instance is distinct and `map` output stays
-  // readable (spec section 8). ZeroMem first: only parts of the GUID are
-  // assigned below, the rest must be the spec'd base (0x00), not stack.
-  ZeroMem (&VendorNode, sizeof (VendorNode));
-  VendorNode.Header.Type    = MEDIA_DEVICE_PATH;
-  VendorNode.Header.SubType = MEDIA_VENDOR_DP;   // 0x03
-  SetDevicePathNodeLength (&VendorNode.Header, sizeof (VendorNode));
-  VendorNode.Guid.Data1     = 0x5C6D7E8F;
-  VendorNode.Guid.Data2     = 0x1111;
-  VendorNode.Guid.Data3     = 0x4001;
-  VendorNode.Guid.Data4[0]  = 0x80;
-  VendorNode.Guid.Data4[1]  = 0x01;
-  VendorNode.Guid.Data4[7]  = (UINT8)Disk->Seq;
-  Disk->DevicePath = AppendDevicePathNode (FileDp, &VendorNode.Header);
   FreePool (FileDp);
-  if (Disk->DevicePath == NULL) {
+  if (Status != EFI_SUCCESS) {
+    // MountLoopFactoryGet printed its own message; a factory Create()
+    // failure is reported here.
+    if ((Status != STATUS_DRIVER_MISSING) && (Status != STATUS_SECURE_BOOT)) {
+      Print (L"MOUNT: error - loop device create failed (%r)\n", Status);
+    }
     ShellCloseFile (&File);
-    FreePool (Disk);
-    return EFI_OUT_OF_RESOURCES;
-  }
-
-  Status = gBS->InstallMultipleProtocolInterfaces (
-                  &Disk->Handle,
-                  &gEfiDevicePathProtocolGuid, Disk->DevicePath,
-                  &gEfiBlockIoProtocolGuid,    &Disk->BlockIo,
-                  &gEfiBlockIo2ProtocolGuid,   &Disk->BlockIo2,
-                  NULL
-                  );
-  if (EFI_ERROR (Status)) {
-    Print (L"MOUNT: error - InstallProtocolInterfaces failed (%r)\n", Status);
-    FreePool (Disk->DevicePath);
-    ShellCloseFile (&File);
-    FreePool (Disk);
     return Status;
   }
-  *DiskOut = Disk;
+  // The factory owns the open file from here on (intentionally never
+  // closed while the mount lives, spec section 8).
   return EFI_SUCCESS;
-}
-
-// Reverse of LoopCreate. Used by the selftest only -- MountRunIso never
-// destroys its loop device because the mount must outlive the app (spec
-// section 8). Closing goes through ShellCloseFile so the Shell's
-// file-handle side log (mFileHandleList) stays consistent.
-STATIC
-VOID
-LoopDestroy (
-  IN LOOP_DISK  *Disk
-  )
-{
-  SHELL_FILE_HANDLE  File;
-
-  gBS->UninstallMultipleProtocolInterfaces (
-         Disk->Handle,
-         &gEfiDevicePathProtocolGuid, Disk->DevicePath,
-         &gEfiBlockIoProtocolGuid,    &Disk->BlockIo,
-         &gEfiBlockIo2ProtocolGuid,   &Disk->BlockIo2,
-         NULL
-         );
-  File = (SHELL_FILE_HANDLE)Disk->BackingFile;
-  ShellCloseFile (&File);
-  FreePool (Disk->DevicePath);
-  FreePool (Disk);
 }
 
 EFI_STATUS
@@ -468,15 +278,17 @@ MountRunIso (
   )
 {
   EFI_STATUS  Status;
-  LOOP_DISK   *Disk;
+  EFI_HANDLE  LoopHandle;
   EFI_HANDLE  *OldFs;
   UINTN       OldCount;
+  BOOLEAN     Iso9660;
+  BOOLEAN     Udf;
 
   OldFs    = NULL;
   OldCount = 0;
   MapSnapshotFsHandles (&OldFs, &OldCount);
 
-  Status = LoopCreate (IsoPath, &Disk);
+  Status = LoopCreate (IsoPath, &LoopHandle, &Iso9660, &Udf);
   // LoopCreate also returns STATUS_ISO_ERROR (a plain small integer with
   // no EFI error bit) -- test against EFI_SUCCESS, not EFI_ERROR().
   if (Status != EFI_SUCCESS) {
@@ -485,24 +297,36 @@ MountRunIso (
     }
     return Status;
   }
-  Print (
-    L"MOUNT: loop device created for %s (%d blocks)\n",
-    IsoPath,
-    (UINT32)(Disk->LastBlock + 1)
-    );
-  DEBUG ((DEBUG_INFO, "MOUNT: loop handle %x seq %u\n", Disk->Handle, Disk->Seq));
+  Print (L"MOUNT: loop device created for %s\n", IsoPath);
+  DEBUG ((DEBUG_INFO, "MOUNT: loop handle %x created\n", LoopHandle));
+
+  // Pure ISO9660 with no ISO9660 driver loaded is provably unclaimable:
+  // the stock firmware stack produces no SimpleFileSystem for it (Task 4
+  // negative control), and ConnectController on a handle no driver claims
+  // deadlocks this OVMF (Task 9: recursive EfiAcquireLock ASSERT in an FV
+  // driver, vCPU spins in CpuDeadLoop). Keep the loop device so the user
+  // can still bind it after loading the driver, but do not connect.
+  if (Iso9660 && !Udf && !MountDriverLoaded (L"drivers\\iso9660_x64.efi")) {
+    Print (L"MOUNT: warn - ISO9660 detected but drivers\\iso9660_x64.efi missing\n");
+    Print (L"MOUNT: loop device kept; load drivers\\iso9660_x64.efi, then map -r\n");
+    DEBUG ((DEBUG_INFO, "MOUNT: no ISO9660 driver, connect skipped\n"));
+    if (OldFs != NULL) {
+      FreePool (OldFs);
+    }
+    return EFI_SUCCESS;
+  }
 
   // Bind the firmware FS stack (PartitionDxe probe, DiskIoDxe, UdfDxe and
   // any loaded efifs driver) on just the new handle, then run the same
   // rescan/refresh/report chain as `mount -<FORMAT>`.
-  gBS->ConnectController (Disk->Handle, NULL, NULL, TRUE);
+  gBS->ConnectController (LoopHandle, NULL, NULL, TRUE);
   MapConnectAllControllers ();
   MapRefreshShell ();
   MapPrintNewVolumes (OldFs, OldCount);
   if (OldFs != NULL) {
     FreePool (OldFs);
   }
-  // Intentionally NOT freed: the loop device must outlive this app
+  // Intentionally NOT destroyed: the loop device must outlive this app
   // (spec section 8: the mount persists after exit).
   return EFI_SUCCESS;
 }
@@ -521,14 +345,21 @@ LoopDiskSelfTest (
   VOID
   )
 {
-  EFI_STATUS         Status;
-  SHELL_FILE_HANDLE  File;
-  LOOP_DISK          *Disk;
-  UINT8              *Pattern;
-  UINT8              *ReadBack;
-  UINTN              Size;
-  BOOLEAN            Ok;
-  EFI_BLOCK_IO2_TOKEN Token;
+  EFI_STATUS                  Status;
+  SHELL_FILE_HANDLE           File;
+  MOUNT_LOOP_FACTORY_PROTOCOL *Factory;
+  EFI_HANDLE                  LoopHandle;
+  EFI_BLOCK_IO_PROTOCOL       *BlockIo;
+  EFI_BLOCK_IO2_PROTOCOL      *BlockIo2;
+  EFI_FILE_PROTOCOL           *BackingFile;
+  UINT8                       *Pattern;
+  UINT8                       *ReadBack;
+  UINTN                       Size;
+  UINT32                      MediaId;
+  BOOLEAN                     Ok;
+  BOOLEAN                     Iso9660;
+  BOOLEAN                     Udf;
+  EFI_BLOCK_IO2_TOKEN         Token;
 
   Pattern = AllocatePool (LOOP_SELFTEST_BLOCKS * LOOP_BLOCK_SIZE);
   ReadBack = AllocatePool (LOOP_BLOCK_SIZE);
@@ -569,40 +400,66 @@ LoopDiskSelfTest (
     return EFI_DEVICE_ERROR;
   }
 
-  // Install the loop device over the temp file and read both marker
-  // blocks back through BlockIo; exercise the BlockIo2 path on block 1.
-  Ok = FALSE;
-  Status = LoopCreate (LOOP_SELFTEST_PATH, &Disk);
+  // Install the loop device over the temp file (through the resident
+  // factory, same as a real mount) and read both marker blocks back
+  // through BlockIo; exercise the BlockIo2 path on block 1.
+  Ok         = FALSE;
+  LoopHandle = NULL;
+  Status     = LoopCreate (LOOP_SELFTEST_PATH, &LoopHandle, &Iso9660, &Udf);
   // STATUS_ISO_ERROR carries no EFI error bit: compare EFI_SUCCESS.
-  if (Status == EFI_SUCCESS) {
-    Ok = TRUE;
-    Size   = LOOP_BLOCK_SIZE;
-    Status = Disk->BlockIo.ReadBlocks (&Disk->BlockIo, LOOP_MEDIA_ID, 0, Size, ReadBack);
+  if ((Status == EFI_SUCCESS) &&
+      !EFI_ERROR (gBS->HandleProtocol (
+                         LoopHandle,
+                         &gEfiBlockIoProtocolGuid,
+                         (VOID **)&BlockIo
+                         )) &&
+      !EFI_ERROR (gBS->HandleProtocol (
+                         LoopHandle,
+                         &gEfiBlockIo2ProtocolGuid,
+                         (VOID **)&BlockIo2
+                         )))
+  {
+    Ok      = TRUE;
+    MediaId = BlockIo->Media->MediaId;
+    Size    = LOOP_BLOCK_SIZE;
+    Status  = BlockIo->ReadBlocks (BlockIo, MediaId, 0, Size, ReadBack);
     if (EFI_ERROR (Status) ||
         (CompareMem (ReadBack, Pattern, LOOP_BLOCK_SIZE) != 0))
     {
       Ok = FALSE;
     }
-    Status = Disk->BlockIo.ReadBlocks (&Disk->BlockIo, LOOP_MEDIA_ID, 1, Size, ReadBack);
+    Status = BlockIo->ReadBlocks (BlockIo, MediaId, 1, Size, ReadBack);
     if (EFI_ERROR (Status) ||
         (CompareMem (ReadBack, Pattern + LOOP_BLOCK_SIZE, LOOP_BLOCK_SIZE) != 0))
     {
       Ok = FALSE;
     }
     ZeroMem (&Token, sizeof (Token));
-    Status = Disk->BlockIo2.ReadBlocksEx (&Disk->BlockIo2, LOOP_MEDIA_ID, 1, &Token, Size, ReadBack);
+    Status = BlockIo2->ReadBlocksEx (BlockIo2, MediaId, 1, &Token, Size, ReadBack);
     if (EFI_ERROR (Status) || EFI_ERROR (Token.TransactionStatus) ||
         (CompareMem (ReadBack, Pattern + LOOP_BLOCK_SIZE, LOOP_BLOCK_SIZE) != 0))
     {
       Ok = FALSE;
     }
     // Read-only contract: writes must be refused.
-    if (Disk->BlockIo.WriteBlocks (&Disk->BlockIo, LOOP_MEDIA_ID, 0, Size, ReadBack) !=
+    if (BlockIo->WriteBlocks (BlockIo, MediaId, 0, Size, ReadBack) !=
         EFI_WRITE_PROTECTED)
     {
       Ok = FALSE;
     }
-    LoopDestroy (Disk);
+  }
+  if (LoopHandle != NULL) {
+    // Destroy hands the backing file back; close it through the Shell it
+    // was opened with so the Shell's file-handle log stays consistent.
+    Status = MountLoopFactoryGet (&Factory);
+    if ((Status == EFI_SUCCESS) &&
+        (Factory->Destroy (Factory, LoopHandle, &BackingFile) == EFI_SUCCESS))
+    {
+      File = (SHELL_FILE_HANDLE)BackingFile;
+      ShellCloseFile (&File);
+    } else {
+      Ok = FALSE;
+    }
   }
   ShellDeleteFileByName (LOOP_SELFTEST_PATH);
 

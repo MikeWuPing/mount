@@ -214,6 +214,12 @@ typedef struct {
 - **QEMU 呈现层新坑（随测随记）**：vpc 挂 ide0-hd1 时本 OVMF AtaBusDxe 静默不枚举（devtree 中整块盘消失）；vpc 挂 virtio-blk 可枚举但落入上述老式句柄问题。因此 Run-MountQemu 规则固化为：`.vhd` 一律先 `qemu-img convert` 成 raw 再挂 IDE；ISO 一律 `-drive media=cdrom` 挂 ATAPI；只读裸盘保留 virtio 路径（仅适用于不需要分区/绑定的场景）。
 - **条目 6 进展**：NTFS（Windows diskpart 格式化）Tested=TRUE；ISO9660（IMAPI2FS 纯 ISO）Tested=TRUE。ext4/btrfs/xfs 留待 Phase 4。
 
+### Task 9 实测结果（2026-08-20，mount -ISO 端到端）
+
+- **条目 4（BackingFile 跨退出存活）→ 结论修正后确认**。文件句柄本身确实跨 mount.efi 退出存活（FatPkg 文件实例在固件侧），但**应用程序安装的协议回调函数随应用镜像一起卸载**——Task 8 的"挂落后退出"设计在首次退出后读取时崩溃：`dir fs1:\` 触发 #UD，RIP 落在 iso9660 镜像头区（偏移 0x1AF < .text RVA 0x240），寄存器呈 ReadBlocks 调用帧（RDX=MediaId "MOUN"、R8=LBA、R9=长度）。Task 8 的"persistence smoke"只证明了句柄存活，从未做退出后的真实读取；同镜像页帧复用掩盖了问题。**修复：LoopDxe 常驻驱动**（`MountPkg/Drivers/LoopDxe/`，DXE_DRIVER，入口安装 `MOUNT_LOOP_FACTORY_PROTOCOL`；boot-service driver 入口返回后镜像保持常驻），mount.efi 只做校验/嗅探/编排。修复后 `mount.efi` 退出 → `dir fsN:\` → `type fsN:\marker.txt` 全链绿（ISO9660/UDF 双场景），条目 4 正式关闭。
+- **新坑：本 OVMF（EfiFs CI DEBUG 构建）固件死锁**——`ConnectController` 一个**没有任何文件系统驱动能认领**的 BlockIo 句柄时，某 FV 驱动递归 `EfiAcquireLock` 触发 `ASSERT (UefiLib.c: Lock->Lock == EfiLockReleased)` 并 `CpuDeadLoop`（QMP 采样 vCPU 单点自旋 0x0e6a4219，栈上留有 ASSERT 文本与 0x0fe77112 重复帧；串口无输出）。纯数据盘、无驱动的纯 ISO9660 盘均可复现；UDF 盘（UdfDxe 认领）与已加载 efifs 驱动的盘不复现。**规避**：嗅探为纯 ISO9660 且未加载 iso9660 驱动时（Task 4 反证固件栈必不认领），mount 跳过 ConnectController，保留 loop 设备并提示 `load drivers\iso9660_x64.efi` + `map -r` 恢复（已实证：load 的 ConnectAllEfi 完成绑定，`type fs1:\marker.txt` 得 ISO9660-MOUNT-OK）。已知残余：存在未认领 loop 设备时再跑 `mount -<FORMAT>` 的全局重扫仍会踩同一固件缺陷——先加载对应 FS 驱动即可，记入待办。
+- **UDF 路径一次通过**：UdfDxe 直接绑定 loop 设备（vendor-media 节点 DP、LogicalPartition=FALSE、2048B 块全绿），§3 的 UdfDxe 疑问在 loop 形态下同步关闭。`map -r` 输出中 loop 卷 DP 形如 `.../Ata(0x0)/\iso9660_test.iso/VenMedia(5C6D7E8F-...)`，可读性符合 §8 预期。
+
 ## 12. 需求追踪
 
 | req.md 条目 | 设计落点 |

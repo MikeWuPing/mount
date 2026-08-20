@@ -32,10 +32,20 @@ Copy-Item $shellEfi "$disk\EFI\BOOT\BOOTX64.EFI"
 Copy-Item (Join-Path $ProjectRoot 'drivers\*_x64.efi') "$disk\drivers\" -Force
 Set-Content -Path (Join-Path $disk 'startup.nsh') -Value $Startup
 Set-Content -Path (Join-Path $disk 'marker.txt') -Value 'host marker'   # default; tests may rely on ISO/VHD markers instead
+# test ISOs ride on fs0: for -ISO scenarios (copy if present)
+foreach ($iso in @('iso9660_test.iso','udf_test.iso')) {
+  $src = Join-Path $ProjectRoot "test_images\$iso"
+  if (Test-Path $src) { Copy-Item $src $disk -Force }
+}
 $v = & (Join-Path $skill 'Build-UefiApp.ps1') -ProjectRoot $ProjectRoot -Edk2Workspace $Edk2 -BuildCommand $buildCmd -OutputHeader $versionHeader -ExpectedVersionFile $expected
 $efi = Join-Path $Edk2 "Build\MountPkg\${Target}_VS2019\X64\mount.efi"
 if (!(Test-Path $efi)) { throw "built efi not found: $efi" }
 Copy-Item $efi (Join-Path $disk 'mount.efi') -Force
+# LoopDxe (built from MountPkg above) deploys as drivers\loop_x64.efi:
+# mount.efi LoadImage/StartImages it on first `mount -ISO`.
+$loopEfi = Join-Path $Edk2 "Build\MountPkg\${Target}_VS2019\X64\LoopDxe.efi"
+if (!(Test-Path $loopEfi)) { throw "built efi not found: $loopEfi" }
+Copy-Item $loopEfi (Join-Path $disk 'drivers\loop_x64.efi') -Force
 python (Join-Path $ProjectRoot 'tools\mkfatimg.py') create $disk (Join-Path $ProjectRoot 'qemu_disk.img')
 if ($LASTEXITCODE -ne 0) { throw "mkfatimg create failed (exit $LASTEXITCODE)" }
 Write-Host "BUILT: $($v.VersionString)"
