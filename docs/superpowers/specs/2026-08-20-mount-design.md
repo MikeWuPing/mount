@@ -220,6 +220,18 @@ typedef struct {
 - **新坑：本 OVMF（EfiFs CI DEBUG 构建）固件死锁**——`ConnectController` 一个**没有任何文件系统驱动能认领**的 BlockIo 句柄时，某 FV 驱动递归 `EfiAcquireLock` 触发 `ASSERT (UefiLib.c: Lock->Lock == EfiLockReleased)` 并 `CpuDeadLoop`（QMP 采样 vCPU 单点自旋 0x0e6a4219，栈上留有 ASSERT 文本与 0x0fe77112 重复帧；串口无输出）。纯数据盘、无驱动的纯 ISO9660 盘均可复现；UDF 盘（UdfDxe 认领）与已加载 efifs 驱动的盘不复现。**规避**：嗅探为纯 ISO9660 且未加载 iso9660 驱动时（Task 4 反证固件栈必不认领），mount 跳过 ConnectController，保留 loop 设备并提示 `load drivers\iso9660_x64.efi` + `map -r` 恢复（已实证：load 的 ConnectAllEfi 完成绑定，`type fs1:\marker.txt` 得 ISO9660-MOUNT-OK）。已知残余：存在未认领 loop 设备时再跑 `mount -<FORMAT>` 的全局重扫仍会踩同一固件缺陷——先加载对应 FS 驱动即可，记入待办。
 - **UDF 路径一次通过**：UdfDxe 直接绑定 loop 设备（vendor-media 节点 DP、LogicalPartition=FALSE、2048B 块全绿），§3 的 UdfDxe 疑问在 loop 形态下同步关闭。`map -r` 输出中 loop 卷 DP 形如 `.../Ata(0x0)/\iso9660_test.iso/VenMedia(5C6D7E8F-...)`，可读性符合 §8 预期。
 
+### Task 10 实测结果（2026-08-20，最终打磨与全量回归）
+
+最终版本 `0.1.0+59` 完成全量回归，所有场景串口版本断言一致、功能断言通过：
+
+- **无参模式**：`mount` 输出版本行、`map` 当前映射表（FS0:）、`Author: Mike Wu` 帮助、格式表（NTFS `[tested]`，EXT4/BTRFS/XFS 未实测）。
+- **帮助模式**：`mount -h` 输出完整用法与作者署名（UEFI Shell 把 `-?` 解释为命令自身帮助，故回归改用 `-h`）。
+- **`-NTFS` 挂载**：NTFS 测试 VHD 挂载为 `fs1:`，卷标 `MOUNTTEST`，`type fs1:\ntfs_marker.txt` 读出 `NTFS-MOUNT-OK`。
+- **`-ISO iso9660_test.iso`**：先 `load fs0:\drivers\iso9660_x64.efi`，再挂载纯 ISO9660 镜像，新卷 `fs1:` 卷标 `ISO9660TEST`，`type fs1:\marker.txt` 读出 `ISO9660-MOUNT-OK`；mount.efi 退出后卷仍可读。
+- **`-ISO udf_test.iso`**：不加载额外驱动，内置 UdfDxe 直接绑定 loop 设备，新卷 `fs1:` 卷标 `UDFTEST`，`type fs1:\marker.txt` 读出 `UDF-MOUNT-OK`。
+
+v1 范围（Phase 0~3）全部关闭；Phase 4（ext4/btrfs/xfs 等格式逐个实测并更新 `Tested` 标志）留待后续迭代。
+
 ## 12. 需求追踪
 
 | req.md 条目 | 设计落点 |

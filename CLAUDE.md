@@ -4,6 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # mount 项目指南
 
+## 当前状态
+
+v1 已完成（Phase 0~3）：`mount -NTFS`、`mount -ISO <file>`、无参列表/帮助、自检均通过 QEMU 闭环验证，证据保留在 `run_logs/` 与 `snapshot/`。Phase 4（ext4/btrfs/xfs 等更多格式实测）为后续迭代。
+
 ## 项目概述
 
 mount 是一个运行在 UEFI Shell 下的纯命令行工具，对标 Linux 的 `mount` 命令。需求以 `req.md` 为准，核心两条：
