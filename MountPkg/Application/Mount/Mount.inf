@@ -1,0 +1,52 @@
+## @file
+# mount UEFI Shell application.
+#
+# Copyright (c) 2026, Mike Wu. All rights reserved.
+#
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = mount
+  FILE_GUID                      = 4D9A2E77-3C1B-4F6A-8E5D-91C2B7A0F348
+  MODULE_TYPE                    = UEFI_APPLICATION
+  VERSION_STRING                 = 0.1
+  ENTRY_POINT                    = UefiMain
+
+[BuildOptions]
+  MSFT:*_*_*_CC_FLAGS = /DEDK2_BUILD /utf-8 /wd4819 /wd4100
+  MSFT:*_*_*_LINK_FLAGS = /SUBSYSTEM:EFI_APPLICATION
+
+[Sources]
+  Mount.c
+  FsDriver.c
+  LoopDisk.c
+  MapReport.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  ShellPkg/ShellPkg.dec
+  MountPkg/MountPkg.dec
+
+[Protocols]
+  gEfiShellParametersProtocolGuid     ## CONSUMES
+  gEfiSimpleFileSystemProtocolGuid    ## SOMETIMES_CONSUMES
+  gEfiLoadedImageProtocolGuid         ## SOMETIMES_CONSUMES
+  gEfiBlockIoProtocolGuid             ## SOMETIMES_PRODUCES
+
+[Guids]
+  gEfiFileSystemVolumeLabelInfoIdGuid ## SOMETIMES_CONSUMES
+  gEfiFileInfoGuid                    ## SOMETIMES_CONSUMES
+
+[LibraryClasses]
+  UefiLib
+  UefiApplicationEntryPoint
+  ShellLib
+  BaseLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  DebugLib
+  UefiBootServicesTableLib
+  PrintLib
+  DevicePathLib

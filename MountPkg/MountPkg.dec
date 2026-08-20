@@ -1,0 +1,15 @@
+## @file
+# mount package declaration.
+#
+# Copyright (c) 2026, Mike Wu. All rights reserved.
+#
+##
+
+[Defines]
+  DEC_SPECIFICATION              = 0x00010005
+  PACKAGE_NAME                   = MountPkg
+  PACKAGE_GUID                   = 6B1E2C31-8B7D-4C5E-9A44-2E6F0D8A5B31
+  PACKAGE_VERSION                = 0.1
+
+[Includes]
+  Include
