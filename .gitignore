@@ -14,3 +14,7 @@ test_images/*.img
 # 临时文件
 *.ppm
 *.log
+
+# QEMU smoke test transient assets
+qemu_disk.img
+qemu_disk_smoke/
