@@ -7,26 +7,89 @@ Usage:
   <key>     sendkey (QEMU qcode name: up/down/left/right/ret/esc/spc/backspace/f2/f5/ctrl_r/...)
   <key>xN   sendkey N times with 300ms spacing (no typematic on QEMU PS/2)
   screendump NAME   capture framebuffer to <shot-dir>/NAME.ppm (+ .png)
-Exit code 0 on clean completion, 1 on QMP error.
+Exit code 0 on clean completion, 1 on unrecoverable QMP error.
+
+Robustness notes (Task 4):
+- A single persistent buffered reader is kept for the whole session. The
+  previous implementation created a fresh sock.makefile() per command; each
+  discarded reader could carry buffered bytes to the grave and desync the
+  reply stream.
+- The QEMU-for-Windows QMP socket has been observed to drop mid-run around
+  the first send-key (ConnectionResetError on sendall while the VM keeps
+  running fine). Every command now retries once on a fresh TCP connection
+  before the run is failed.
+- After connect, the socket is set back to blocking mode: the 1s connect
+  timeout must not leak into command reads.
 """
-import argparse, json, socket, struct, sys, time, os
+import argparse, json, socket, sys, time, os
 from PIL import Image  # noqa: E402  (Pillow available on this machine)
 
-def qmp_call(sock, cmd, args=None):
-    payload = json.dumps({"execute": cmd, "arguments": args or {}})
-    sock.sendall(payload.encode() + b"\n")
-    while True:
-        line = sock.makefile().readline()
-        if not line:
-            raise ConnectionError("QMP connection closed")
-        msg = json.loads(line)
-        if msg.get("event"):
-            continue
-        if msg.get("error"):
-            raise RuntimeError(f"QMP {cmd} error: {msg['error']}")
-        return msg.get("return")
 
-def sendkey(sock, name, n=1):
+class Qmp:
+    """Persistent QMP connection with one transparent reconnect+retry."""
+
+    def __init__(self, port, connect_attempts=30):
+        self.port = port
+        self.sock = None
+        self.file = None
+        last_err = None
+        for _ in range(connect_attempts):
+            try:
+                self._open()
+                self.call("qmp_capabilities")
+                return
+            except OSError as e:
+                last_err = e
+                self._close()
+                time.sleep(1)
+        raise ConnectionError(f"cannot connect to QMP: {last_err}")
+
+    def _open(self):
+        self.sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        # Back to blocking mode: the connect timeout must not apply to reads.
+        self.sock.settimeout(None)
+        self.file = self.sock.makefile("rb")
+
+    def _close(self):
+        for obj in (self.file, self.sock):
+            try:
+                if obj is not None:
+                    obj.close()
+            except OSError:
+                pass
+        self.file = None
+        self.sock = None
+
+    def _reconnect(self):
+        self._close()
+        # QEMU's listener may need a moment after the previous drop.
+        time.sleep(1)
+        self._open()
+        self.call("qmp_capabilities", _retry=False)
+
+    def call(self, cmd, args=None, _retry=True):
+        payload = json.dumps({"execute": cmd, "arguments": args or {}})
+        try:
+            self.sock.sendall(payload.encode() + b"\n")
+            while True:
+                line = self.file.readline()
+                if not line:
+                    raise ConnectionError("QMP connection closed")
+                msg = json.loads(line)
+                if msg.get("event"):
+                    continue
+                if msg.get("error"):
+                    raise RuntimeError(f"QMP {cmd} error: {msg['error']}")
+                return msg.get("return")
+        except (ConnectionError, OSError):
+            if not _retry:
+                raise
+            print(f"QMP connection lost during {cmd}; reconnecting", file=sys.stderr)
+            self._reconnect()
+            return self.call(cmd, args, _retry=False)
+
+
+def sendkey(qmp, name, n=1):
     # name may be a chord "ctrl_r+c": a SINGLE send-key call with a key
     # array presses all keys down together, waits hold_time, then releases
     # them together - the guest sees a true chord (Ctrl held while 'c'
@@ -34,12 +97,13 @@ def sendkey(sock, name, n=1):
     # before 'c' arrives, losing the modifier (Task 7 closed loop).
     keys = [{"type": "qcode", "data": k} for k in name.split("+")]
     for i in range(n):
-        qmp_call(sock, "send-key", {"keys": keys, "hold-time": 80})
+        qmp.call("send-key", {"keys": keys, "hold-time": 80})
         if i < n - 1:
             time.sleep(0.3)
 
-def shot(sock, path_ppm):
-    qmp_call(sock, "screendump", {"filename": path_ppm})
+
+def shot(qmp, path_ppm):
+    qmp.call("screendump", {"filename": path_ppm})
     # QEMU (>= 9.x) performs screendump asynchronously: the QMP reply
     # arrives before the PPM file is written. Poll briefly for it.
     for _ in range(100):
@@ -50,6 +114,7 @@ def shot(sock, path_ppm):
         raise FileNotFoundError(f"screendump did not produce {path_ppm}")
     png = path_ppm.replace(".ppm", ".png")
     Image.open(path_ppm).convert("RGB").save(png)
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -62,15 +127,7 @@ def main():
     a = ap.parse_args()
     os.makedirs(a.shot_dir, exist_ok=True)
     time.sleep(1)
-    for _ in range(30):
-        try:
-            sock = socket.create_connection(("127.0.0.1", a.port), timeout=1)
-            break
-        except OSError:
-            time.sleep(1)
-    else:
-        sys.exit("cannot connect to QMP")
-    qmp_call(sock, "qmp_capabilities")
+    qmp = Qmp(a.port)
     shots = 0
     tokens = a.script.split() if a.script else []
     i = 0
@@ -86,11 +143,11 @@ def main():
             if t == "screendump":
                 name = tokens[i]; i += 1
                 p = os.path.join(a.shot_dir, f"{stamp}_{name}.ppm")
-                shot(sock, p); shots += 1; continue
+                shot(qmp, p); shots += 1; continue
             if t == "vmstop":
-                qmp_call(sock, "stop"); continue
+                qmp.call("stop"); continue
             if t == "vmcont":
-                qmp_call(sock, "cont"); continue
+                qmp.call("cont"); continue
             # key with optional xN ("downx3" = 3 presses); a bare "x" token
             # (e.g. the letter x) must not crash the driver (int("") ValueError
             # or an empty qcode sent to QEMU)
@@ -99,11 +156,11 @@ def main():
             n = 1
             if len(parts) > 1 and parts[1].isdigit():
                 n = int(parts[1])
-            sendkey(sock, name, n)
+            sendkey(qmp, name, n)
         else:
             time.sleep(a.interval)
             p = os.path.join(a.shot_dir, f"{stamp}_{(shots+1):03d}.ppm")
-            shot(sock, p); shots += 1
+            shot(qmp, p); shots += 1
         if a.qemu_pid:
             try:
                 os.kill(a.qemu_pid, 0)
@@ -112,6 +169,7 @@ def main():
         if shots >= a.max_shots:
             break
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

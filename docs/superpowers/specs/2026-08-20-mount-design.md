@@ -204,6 +204,16 @@ typedef struct {
 5. efifs 预编译驱动与 OVMF/VS2019 环境的兼容性（Phase 0）。
 6. 各格式驱动对真实卷特性集的容忍度（btrfs RAID/zstd、xfs v5、ext4 新 feature flag）——逐个标注 Tested。
 
+### Phase 0 实测结果（2026-08-20，Task 4 冒烟）
+
+环境：ContraQwen OVMF + QEMU 10.2.50-dev；证据链见 `.superpowers/sdd/2026-08-20-mount-v1/task-4-report.md` 及对应 run_logs/snapshot。三个场景全部按 `test_images/phase0_*.nsh` 跑通，结论如下。
+
+- **条目 5（efifs 兼容性）→ 确认可用，但有介质呈现前提**。`iso9660_x64.efi` 挂 IDE CD-ROM（2048B ATAPI）成功绑定纯 ISO9660 卷：`dir fs1:\` 列出 `marker.txt`/`sub`，`type` 读出 `ISO9660-MOUNT-OK`；`ntfs_x64.efi` 挂 IDE 硬盘（PartitionDxe 正常生成 `HD(1,MBR,0xEA31AC2F)` 子节点）成功：`type fs1:\ntfs_marker.txt` 得 `NTFS-MOUNT-OK`。**但本 OVMF 的 VirtioBlkDxe 是老式协议集**（BlockIo only，无 BlockIo2/DiskInfo，盘符直接落在 PCI 设备句柄上）：efifs 驱动在该类句柄上绑定失败，PartitionDxe 也不为其建分区子节点——virtio-blk 呈现下 ISO 与 NTFS 双双失败。推论：测试与验收一律走 IDE 呈现；**Task 8 的 LoopDisk 必须在新句柄上安装完整协议集（BlockIo + BlockIo2，独立设备路径节点），这是 efifs 能否绑定的前提，Task 8 开工即验**。
+- **§3 UdfDxe 疑问 → 确认**：纯 ISO9660 CD 不加载 efifs 驱动时，固件栈（含 UdfDxe）不产生任何 SimpleFileSystem，`map -r` 后仍无 fs1:，`dir fs1:\` 报 `File Not Found`。纯 ISO9660 必须由 efifs `Iso9660.inf` 补位，UdfDxe 只认 UDF/ECMA-167。
+- **条目 1（map -r 语义）→ 部分澄清**：EDK2 Shell 源码实证 `map -r` 只做 `ShellCommandCreateInitialMappingsAndPaths()` + `ProbeForMediaChange()`，**重建 Shell 映射表但不触发任何驱动绑定**；绑定由 `load` 命令自带的 ConnectAllEfi（不带 `-nc` 时 StartImage 后对全部句柄 `ConnectController`）或显式 `connect -r` 完成。mount.efi 的正确序列是：LoadImage/StartImage → 自己调 `ConnectController()` → 再借 `map -r` 刷新 Shell 映射。ShellExecute("map -r") 能否刷新宿主表仍待 Phase 2 验证，但"先连接后刷新"的职责划分已明确。
+- **QEMU 呈现层新坑（随测随记）**：vpc 挂 ide0-hd1 时本 OVMF AtaBusDxe 静默不枚举（devtree 中整块盘消失）；vpc 挂 virtio-blk 可枚举但落入上述老式句柄问题。因此 Run-MountQemu 规则固化为：`.vhd` 一律先 `qemu-img convert` 成 raw 再挂 IDE；ISO 一律 `-drive media=cdrom` 挂 ATAPI；只读裸盘保留 virtio 路径（仅适用于不需要分区/绑定的场景）。
+- **条目 6 进展**：NTFS（Windows diskpart 格式化）Tested=TRUE；ISO9660（IMAPI2FS 纯 ISO）Tested=TRUE。ext4/btrfs/xfs 留待 Phase 4。
+
 ## 12. 需求追踪
 
 | req.md 条目 | 设计落点 |
