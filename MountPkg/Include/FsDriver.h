@@ -4,7 +4,6 @@
 #include <Uefi.h>
 
 #define MOUNT_SELFTEST_OK   "SELFTEST: ALL PASS"
-#define MOUNT_FMT_NAME_MAX  16
 
 // Exit-code convention (spec s9): a literal small integer is returned to
 // the Shell as the app exit status. "Driver loaded but no volume found"
@@ -38,18 +37,20 @@ MountFormatEntry (
   IN UINTN  Index
   );
 
-// Open a DriverFile (relative to the mount.efi directory) read-only,
-// resolved against the volume mount.efi was loaded from. The Shell CWD
-// cannot be trusted (startup.nsh runs with no current directory), so
-// this goes through LoadedImage->DeviceHandle + SimpleFileSystem.
+// Open a DriverFile (relative to the mount.efi directory) read-only.
+// Resolution goes through the single canonical self-dir resolver in
+// FsDriver.c (LoadedImage->DeviceHandle + FilePath directory); the Shell
+// CWD cannot be trusted (startup.nsh runs with no current directory).
 EFI_STATUS
 MountOpenDriverFile (
   IN  CONST CHAR16       *DriverFile,
   OUT EFI_FILE_PROTOCOL  **FileHandle
   );
 
-// Task 7 implements LoadImage/StartImage + ConnectController; the Task 6
-// stub prints "not implemented" and returns EFI_SUCCESS.
+// Full `mount -<FORMAT>` flow: LoadImage/StartImage the format's driver
+// (deduped by loaded-image path suffix), ConnectController rescan,
+// "map -r" Shell refresh, new-volume report. Returns EFI_SUCCESS even
+// when no matching volume exists; STATUS_* on hard errors.
 EFI_STATUS
 MountRunFormat (
   IN CONST MOUNT_FORMAT_ENTRY  *Entry

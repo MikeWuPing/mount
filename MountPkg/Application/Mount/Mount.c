@@ -71,7 +71,6 @@ UefiMain (
   EFI_STATUS                    Status;
   EFI_SHELL_PARAMETERS_PROTOCOL *Params;
   CONST MOUNT_FORMAT_ENTRY      *Entry;
-  EFI_STATUS                    CmdStatus;
 
   PrintVersion ();
 
@@ -88,9 +87,7 @@ UefiMain (
 
   if (Params->Argc < 2) {
     // No args: current mappings + usage + format table.
-    // NOTE: this tree's ShellExecute is the 5-arg form and takes the
-    // parent image handle by pointer.
-    ShellExecute (&ImageHandle, L"map", FALSE, NULL, &CmdStatus);
+    MapPrintCurrentMappings ();
     PrintHelp ();
     return EFI_SUCCESS;
   }

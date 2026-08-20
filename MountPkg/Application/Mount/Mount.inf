@@ -34,6 +34,7 @@
   gEfiShellParametersProtocolGuid     ## CONSUMES
   gEfiSimpleFileSystemProtocolGuid    ## SOMETIMES_CONSUMES
   gEfiLoadedImageProtocolGuid         ## SOMETIMES_CONSUMES
+  gEfiShellProtocolGuid               ## SOMETIMES_CONSUMES
   gEfiBlockIoProtocolGuid             ## SOMETIMES_PRODUCES
 
 [Guids]

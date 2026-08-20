@@ -1,23 +1,33 @@
 /** @file
-  FsDriver -- format-name -> driver-file mapping table and lookup.
+  FsDriver -- format-name -> driver-file mapping, driver locate/load/connect.
 
-  One table row per supported format; `mount -<FORMAT>` dispatch is a
-  pure table lookup, so adding a format touches only this table (plus a
-  driver file under drivers/), never the main flow.
+  One table row per supported format; `mount -<FORMAT>` dispatch is a pure
+  table lookup, so adding a format touches only this table (plus a driver
+  file under drivers/), never the main flow.
+
+  All paths that resolve a file relative to mount.efi's own directory go
+  through the single canonical resolver MountGetSelfDir(): the Shell CWD
+  cannot be trusted (this OVMF shell runs startup.nsh with NO current
+  directory, prompt stays "Shell>").
 
   Copyright (c) 2026, Mike Wu. All rights reserved.
 **/
 
 #include <Uefi.h>
+#include <Library/UefiLib.h>
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
-#include <Library/DevicePathLib.h>
 #include <Library/MemoryAllocationLib.h>
+#include <Library/DebugLib.h>
+#include <Library/PrintLib.h>
 #include <Library/UefiBootServicesTableLib.h>
-#include <Library/UefiLib.h>
+#include <Library/DevicePathLib.h>
 #include <Protocol/LoadedImage.h>
 #include <Protocol/SimpleFileSystem.h>
 #include "FsDriver.h"
+#include "MapReport.h"
+
+#define MOUNT_MAX_PATH  256
 
 // Notes are user-visible (mount / mount -?): English only (req 9).
 // NTFS Tested=TRUE per the Task 4 Phase 0 QEMU evidence.
@@ -91,32 +101,26 @@ MountFindFormat (
   return NULL;
 }
 
-// Resolve a DriverFile (relative to the mount.efi directory) against the
-// volume mount.efi was loaded from, and open it read-only. The Shell CWD
-// is unreliable for this: this OVMF shell runs startup.nsh with NO current
-// directory (prompt stays "Shell>"), so CWD-relative opens fail. Task 7
-// uses the same resolution for LoadImage.
+// The one canonical self-location resolver. Returns the volume handle
+// mount.efi was loaded from (LoadedImage->DeviceHandle: for a file-loaded
+// image this is exactly the SimpleFileSystem device) plus the image's
+// directory relative to that volume root: L"" when mount.efi sits at the
+// root, else L"\sub\dir" (leading backslash, no trailing backslash).
+// MountOpenDriverFile() and MountBuildDriverDevicePath() both build on
+// this; there is deliberately no second parser.
+STATIC
 EFI_STATUS
-MountOpenDriverFile (
-  IN  CONST CHAR16       *DriverFile,
-  OUT EFI_FILE_PROTOCOL  **FileHandle
+MountGetSelfDir (
+  OUT EFI_HANDLE  *VolHandle,
+  OUT CHAR16      *DirPath   // size MOUNT_MAX_PATH; L"" at volume root
   )
 {
-  EFI_STATUS                       Status;
-  EFI_LOADED_IMAGE_PROTOCOL        *LoadedImage;
-  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Sfs;
-  EFI_FILE_PROTOCOL                *Root;
-  EFI_DEVICE_PATH_PROTOCOL         *Node;
-  CONST CHAR16                     *ImagePath;
-  CONST CHAR16                     *P;
-  CONST CHAR16                     *LastSlash;
-  UINTN                            DirLen;
-  CHAR16                           *FullPath;
-
-  if ((DriverFile == NULL) || (FileHandle == NULL)) {
-    return EFI_INVALID_PARAMETER;
-  }
-  *FileHandle = NULL;
+  EFI_STATUS                 Status;
+  EFI_LOADED_IMAGE_PROTOCOL  *LoadedImage;
+  EFI_DEVICE_PATH_PROTOCOL   *Node;
+  CONST CHAR16               *ImagePath;
+  CONST CHAR16               *P;
+  CONST CHAR16               *LastSlash;
 
   Status = gBS->HandleProtocol (
                   gImageHandle,
@@ -126,13 +130,10 @@ MountOpenDriverFile (
   if (EFI_ERROR (Status)) {
     return Status;
   }
-  Status = gBS->HandleProtocol (
-                  LoadedImage->DeviceHandle,
-                  &gEfiSimpleFileSystemProtocolGuid,
-                  (VOID **)&Sfs
-                  );
-  if (EFI_ERROR (Status)) {
-    return Status;
+  *VolHandle = LoadedImage->DeviceHandle;
+  DirPath[0] = L'\0';
+  if (LoadedImage->FilePath == NULL) {
+    return EFI_NOT_FOUND;
   }
 
   // Last FILEPATH node of the image path, e.g. "\mount.efi".
@@ -151,40 +152,243 @@ MountOpenDriverFile (
     return EFI_NOT_FOUND;
   }
 
-  // Directory prefix of the image: everything up to and including the
-  // last backslash ("\mount.efi" -> "\", "\tools\mount.efi" -> "\tools\").
+  // Strip the last path component -> directory: "\mount.efi" -> L"",
+  // "\tools\mount.efi" -> L"\tools".
   LastSlash = NULL;
   for (P = ImagePath; *P != L'\0'; P++) {
     if (*P == L'\\') {
       LastSlash = P;
     }
   }
-  DirLen = (LastSlash == NULL) ? 0 : (UINTN)(LastSlash - ImagePath + 1);
+  if (LastSlash == NULL) {
+    return EFI_NOT_FOUND;
+  }
+  StrnCpyS (DirPath, MOUNT_MAX_PATH, ImagePath, (UINTN)(LastSlash - ImagePath));
+  return EFI_SUCCESS;
+}
 
-  FullPath = AllocatePool ((DirLen + StrLen (DriverFile) + 1) * sizeof (CHAR16));
-  if (FullPath == NULL) {
-    return EFI_OUT_OF_RESOURCES;
+// Join the self directory with a mount.efi-relative file path:
+// (L"", L"drivers\x.efi") -> L"drivers\x.efi" (root-relative open),
+// (L"\t", L"drivers\x.efi") -> L"\t\drivers\x.efi".
+STATIC
+VOID
+MountJoinSelfPath (
+  IN  CONST CHAR16  *SelfDir,
+  IN  CONST CHAR16  *Relative,
+  OUT CHAR16        *FullPath  // size MOUNT_MAX_PATH
+  )
+{
+  if (SelfDir[0] == L'\0') {
+    StrnCpyS (FullPath, MOUNT_MAX_PATH, Relative, MOUNT_MAX_PATH - 1);
+  } else {
+    UnicodeSPrint (FullPath, MOUNT_MAX_PATH * sizeof (CHAR16), L"%s\\%s", SelfDir, Relative);
   }
-  if (DirLen > 0) {
-    CopyMem (FullPath, ImagePath, DirLen * sizeof (CHAR16));
+}
+
+// Open a DriverFile (relative to the mount.efi directory) read-only,
+// resolved via MountGetSelfDir() against the volume mount.efi was loaded
+// from. Used by the selftest driver-presence check.
+EFI_STATUS
+MountOpenDriverFile (
+  IN  CONST CHAR16       *DriverFile,
+  OUT EFI_FILE_PROTOCOL  **FileHandle
+  )
+{
+  EFI_STATUS                       Status;
+  EFI_HANDLE                       VolHandle;
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Sfs;
+  EFI_FILE_PROTOCOL                *Root;
+  CHAR16                           Dir[MOUNT_MAX_PATH];
+  CHAR16                           Full[MOUNT_MAX_PATH];
+
+  if ((DriverFile == NULL) || (FileHandle == NULL)) {
+    return EFI_INVALID_PARAMETER;
   }
-  StrCpyS (FullPath + DirLen, StrLen (DriverFile) + 1, DriverFile);
+  *FileHandle = NULL;
+
+  Status = MountGetSelfDir (&VolHandle, Dir);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+  Status = gBS->HandleProtocol (
+                  VolHandle,
+                  &gEfiSimpleFileSystemProtocolGuid,
+                  (VOID **)&Sfs
+                  );
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+  MountJoinSelfPath (Dir, DriverFile, Full);
 
   Status = Sfs->OpenVolume (Sfs, &Root);
   if (!EFI_ERROR (Status)) {
-    Status = Root->Open (Root, FileHandle, FullPath, EFI_FILE_MODE_READ, 0);
+    Status = Root->Open (Root, FileHandle, Full, EFI_FILE_MODE_READ, 0);
     Root->Close (Root);
   }
-  FreePool (FullPath);
   return Status;
 }
 
-// Task 7 lands the real LoadImage/StartImage + ConnectController body.
+// Build a full device path (volume device path + filepath node) for a
+// DriverFile relative to the mount.efi directory, for LoadImage().
+STATIC
+EFI_STATUS
+MountBuildDriverDevicePath (
+  IN  CONST CHAR16              *DriverFile,
+  OUT EFI_DEVICE_PATH_PROTOCOL  **DevicePath
+  )
+{
+  EFI_STATUS  Status;
+  EFI_HANDLE  VolHandle;
+  CHAR16      Dir[MOUNT_MAX_PATH];
+  CHAR16      Full[MOUNT_MAX_PATH];
+
+  Status = MountGetSelfDir (&VolHandle, Dir);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+  MountJoinSelfPath (Dir, DriverFile, Full);
+  *DevicePath = FileDevicePath (VolHandle, Full);
+  return (*DevicePath != NULL) ? EFI_SUCCESS : EFI_OUT_OF_RESOURCES;
+}
+
+// Dedupe: any loaded image whose FilePath device path text ends with the
+// driver's relative path counts as already loaded (exact case: the table
+// built every path this flow loads).
+STATIC
+BOOLEAN
+MountDriverLoaded (
+  IN CONST CHAR16  *DriverFile
+  )
+{
+  EFI_STATUS  Status;
+  EFI_HANDLE  *Handles;
+  UINTN       Count;
+  UINTN       Index;
+  BOOLEAN     Found;
+
+  Found = FALSE;
+  Status = gBS->LocateHandleBuffer (
+                  ByProtocol,
+                  &gEfiLoadedImageProtocolGuid,
+                  NULL,
+                  &Count,
+                  &Handles
+                  );
+  if (EFI_ERROR (Status)) {
+    return FALSE;
+  }
+  for (Index = 0; Index < Count && !Found; Index++) {
+    EFI_LOADED_IMAGE_PROTOCOL  *Li;
+    CHAR16                     *Text;
+
+    if (EFI_ERROR (gBS->HandleProtocol (
+                          Handles[Index],
+                          &gEfiLoadedImageProtocolGuid,
+                          (VOID **)&Li
+                          )) ||
+        (Li->FilePath == NULL))
+    {
+      continue;
+    }
+    Text = ConvertDevicePathToText (Li->FilePath, FALSE, FALSE);
+    if (Text != NULL) {
+      if ((StrLen (Text) >= StrLen (DriverFile)) &&
+          (StrCmp (Text + StrLen (Text) - StrLen (DriverFile), DriverFile) == 0))
+      {
+        Found = TRUE;
+      }
+      FreePool (Text);
+    }
+  }
+  FreePool (Handles);
+  return Found;
+}
+
+// Full `mount -<FORMAT>` flow: load the format's driver (once), reconnect
+// controllers so it binds every matching BlockIo device, refresh the
+// Shell mapping table, and report the volumes that appeared. "Driver
+// loaded but no volume found" is a legitimate result (EFI_SUCCESS).
 EFI_STATUS
 MountRunFormat (
   IN CONST MOUNT_FORMAT_ENTRY  *Entry
   )
 {
-  Print (L"MOUNT: -%s driver loading not implemented yet (Task 7)\n", Entry->Name);
+  EFI_STATUS                Status;
+  EFI_DEVICE_PATH_PROTOCOL  *Dp;
+  EFI_HANDLE                Image;
+  EFI_HANDLE                *OldFs;
+  UINTN                     OldCount;
+
+  if (Entry == NULL) {
+    return STATUS_INVALID_PARAMETER;
+  }
+
+  // Snapshot BEFORE load/connect: the report is the diff against this.
+  OldFs    = NULL;
+  OldCount = 0;
+  MapSnapshotFsHandles (&OldFs, &OldCount);
+
+  if (MountDriverLoaded (Entry->DriverFile)) {
+    Print (L"MOUNT: %s driver already loaded\n", Entry->Name);
+    DEBUG ((DEBUG_INFO, "MOUNT: %S driver already loaded\n", Entry->Name));
+  } else {
+    Status = MountBuildDriverDevicePath (Entry->DriverFile, &Dp);
+    if (EFI_ERROR (Status)) {
+      Print (L"MOUNT: error - cannot locate self directory (%r)\n", Status);
+      if (OldFs != NULL) {
+        FreePool (OldFs);
+      }
+      return STATUS_DRIVER_MISSING;
+    }
+    Status = gBS->LoadImage (FALSE, gImageHandle, Dp, NULL, 0, &Image);
+    FreePool (Dp);
+    if ((Status == EFI_NOT_FOUND) ||
+        (Status == EFI_LOAD_ERROR) ||
+        (Status == EFI_INVALID_PARAMETER))
+    {
+      Print (L"MOUNT: error - %s not found (get it from efi.akeo.ie)\n", Entry->DriverFile);
+      DEBUG ((DEBUG_INFO, "MOUNT: driver file missing\n"));
+      if (OldFs != NULL) {
+        FreePool (OldFs);
+      }
+      return STATUS_DRIVER_MISSING;
+    }
+    if (Status == EFI_SECURITY_VIOLATION) {
+      Print (L"MOUNT: error - driver blocked by Secure Boot\n");
+      DEBUG ((DEBUG_INFO, "MOUNT: driver blocked by Secure Boot\n"));
+      if (OldFs != NULL) {
+        FreePool (OldFs);
+      }
+      return STATUS_SECURE_BOOT;
+    }
+    if (EFI_ERROR (Status)) {
+      Print (L"MOUNT: error - LoadImage %s failed (%r)\n", Entry->DriverFile, Status);
+      if (OldFs != NULL) {
+        FreePool (OldFs);
+      }
+      return STATUS_DRIVER_MISSING;
+    }
+    // A driver image returns from StartImage once its entry point has
+    // registered DriverBinding; it does not "run" like an app.
+    Status = gBS->StartImage (Image, NULL, NULL);
+    if (EFI_ERROR (Status)) {
+      Print (L"MOUNT: error - StartImage failed (%r)\n", Status);
+      DEBUG ((DEBUG_INFO, "MOUNT: StartImage failed (%r)\n", Status));
+      if (OldFs != NULL) {
+        FreePool (OldFs);
+      }
+      return STATUS_DRIVER_MISSING;
+    }
+    Print (L"MOUNT: driver %s loaded\n", Entry->DriverFile);
+    DEBUG ((DEBUG_INFO, "MOUNT: driver %S loaded\n", Entry->DriverFile));
+  }
+
+  MapConnectAllControllers ();
+  MapRefreshShell ();
+  MapPrintNewVolumes (OldFs, OldCount);
+  if (OldFs != NULL) {
+    FreePool (OldFs);
+  }
+  DEBUG ((DEBUG_INFO, "MOUNT: -%S flow done\n", Entry->Name));
   return EFI_SUCCESS;
 }
