@@ -48,6 +48,10 @@ $proc = Start-Process -FilePath $qemu -ArgumentList $args -PassThru `
   -RedirectStandardError $stderrLog -RedirectStandardOutput (Join-Path $runLogs ($stamp + '_stdout.log'))
 $py = Join-Path $ProjectRoot 'tools\qmp_drive.py'
 python $py --port $QmpPort --shot-dir $snapshot --qemu-pid $proc.Id --max-shots $MaxShots --script $Script
+if ($LASTEXITCODE -ne 0) {
+  if (-not $proc.HasExited) { $proc.Kill(); $proc.WaitForExit() }
+  throw "qmp_drive.py failed with exit code $LASTEXITCODE (serial: $serial)"
+}
 if (-not $proc.HasExited) { $proc.Kill(); $proc.WaitForExit() }
 $err = if (Test-Path $stderrLog) { Get-Content -Raw $stderrLog } else { '' }
 if ($err -match 'assertion|Assertion failed|ERROR:') {
