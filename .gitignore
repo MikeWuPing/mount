@@ -8,7 +8,10 @@ MountPkg/Application/Mount/Version.h
 # 测试资产（test_images/ 脚本生成，产物不入库）
 test_images/*.vhd
 test_images/*.vhdx
+# 测试镜像生成中间产物（失败时可能残留）
 test_images/*.iso
+test_images/iso_stage/
+test_images/dp_script.txt*
 test_images/*.img
 
 # 临时文件
