@@ -280,6 +280,8 @@ MountDriverLoaded (
   for (Index = 0; Index < Count && !Found; Index++) {
     EFI_LOADED_IMAGE_PROTOCOL  *Li;
     CHAR16                     *Text;
+    UINTN                      TextLen;
+    UINTN                      FileLen;
 
     if (EFI_ERROR (gBS->HandleProtocol (
                           Handles[Index],
@@ -292,8 +294,14 @@ MountDriverLoaded (
     }
     Text = ConvertDevicePathToText (Li->FilePath, FALSE, FALSE);
     if (Text != NULL) {
-      if ((StrLen (Text) >= StrLen (DriverFile)) &&
-          (StrCmp (Text + StrLen (Text) - StrLen (DriverFile), DriverFile) == 0))
+      TextLen = StrLen (Text);
+      FileLen = StrLen (DriverFile);
+      // Suffix match, but only on a path-component boundary: the match
+      // must be the whole text or be preceded by a backslash, so
+      // "\xdrivers\ntfs_x64.efi" does not false-positive.
+      if ((TextLen >= FileLen) &&
+          (StrCmp (Text + TextLen - FileLen, DriverFile) == 0) &&
+          ((TextLen == FileLen) || (Text[TextLen - FileLen - 1] == L'\\')))
       {
         Found = TRUE;
       }
@@ -374,6 +382,8 @@ MountRunFormat (
     if (EFI_ERROR (Status)) {
       Print (L"MOUNT: error - StartImage failed (%r)\n", Status);
       DEBUG ((DEBUG_INFO, "MOUNT: StartImage failed (%r)\n", Status));
+      // Do not leave a resident image whose DriverBinding never started.
+      gBS->UnloadImage (Image);
       if (OldFs != NULL) {
         FreePool (OldFs);
       }
