@@ -22,6 +22,7 @@
   FsDriver.c
   LoopDisk.c
   MapReport.c
+  SelfTest.c
 
 [Packages]
   MdePkg/MdePkg.dec
