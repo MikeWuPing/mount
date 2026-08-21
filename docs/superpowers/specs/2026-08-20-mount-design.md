@@ -232,6 +232,16 @@ typedef struct {
 
 v1 范围（Phase 0~3）全部关闭；Phase 4（ext4/btrfs/xfs 等格式逐个实测并更新 `Tested` 标志）留待后续迭代。
 
+### 2026-08-21 跟进：真实 ISO 实测 + ISO9660 驱动自动加载（build 0.1.0+61/62）
+
+- **`mount -ISO` 不再要求手工 `load` iso9660 驱动**。此前纯 ISO9660 且驱动未加载时只打印提示并跳过连接（Task 9 死锁规避），违背 req.md"自动挂载"要求。现从 `MountRunFormat` 提取 `MountLoadDriver()`（FsDriver.c，查重+LoadImage+StartImage+全部报错文案），`MountRunIso` 嗅探到纯 ISO9660（`Iso9660 && !Udf`）且驱动未加载时自动调用——与 `-<FORMAT>` 行为同构，且被驱动认领的句柄天然免疫 OVMF 死锁。驱动文件缺失时退化为原 keep-loop + 手工 `load` + `map -r` 恢复路径（exit 0）。
+- **工具**：`Run-MountQemu.ps1` 新增 `-Window`（SDL 可见窗口，screendump 证据不受影响）与 `-Manual`（只拉起 QEMU，不做脚本驱动/版本断言/杀进程，供人工交互）。
+- **真实 ISO 验证**（均为用户实盘文件，入 `test_images/` 备份、不入库）：
+  - `ubuntukylin.iso`（Ubuntu Kylin 16.04.2 LTS，1.6GB，纯 ISO9660）：自动加载 iso9660 驱动路径，`fs1:` 卷标 `Ubuntu-Kylin 16.04.2 LTS amd64`，mount 退出后 `dir fs1:\` 列出 casper/pool/md5sum.txt 等全根目录。
+  - `win10_iot.iso`（Windows 10 IoT Core，710MB，UDF bridge：BEA01/NSR02+CD001）：零外部驱动，固件 UdfDxe 直接绑定 loop 设备，`fs1:` 卷标 `AMBM_x86FREO_EN-US_DV5`，含 `Windows_10_IoT_Core_for_Mbm.msi`（743MB）可列出。
+  - `Windows_10.iso`（4.98GB，UDF）：超过 FAT32 单文件 4GiB−1 上限，无法放入启动 FAT 卷——Phase 5 的 NTFS 中转路径（`mount -NTFS` 先挂 NTFS 数据盘再 `mount -ISO fs3:\win10.iso`）是唯一可行方案，已记录于 §3。
+- **新 QEMU 坑（人工交互场景）**：SDL 窗口键盘输入受宿主输入法影响——中文输入法处于中文模式时吞掉小写字母（进拼音组字缓冲）、数字透传，表现为"数字能打字母不能打"；切英文模式（Shift/中英切换）即恢复。自动化注入走 QMP sendkey（虚拟 PS/2），天然免疫宿主输入法，QEMU 按键自动重复由 guest PS/2 驱动产生（按住键会刷屏）。
+
 ## 12. 需求追踪
 
 | req.md 条目 | 设计落点 |

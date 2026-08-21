@@ -312,6 +312,68 @@ MountDriverLoaded (
   return Found;
 }
 
+// Load a driver file (relative to the mount.efi directory) with the
+// standard error contract: STATUS_DRIVER_MISSING / STATUS_SECURE_BOOT /
+// STATUS_INVALID_PARAMETER on failure (these carry no EFI error bit --
+// callers compare against EFI_SUCCESS), EFI_SUCCESS once the entry point
+// has run. Prints every message itself; dedupes via MountDriverLoaded so
+// a repeated load is a silent no-op success. Shared by the -<FORMAT> flow
+// and by `mount -ISO`'s automatic ISO9660 driver load.
+EFI_STATUS
+MountLoadDriver (
+  IN CONST CHAR16  *DriverFile
+  )
+{
+  EFI_STATUS                Status;
+  EFI_DEVICE_PATH_PROTOCOL  *Dp;
+  EFI_HANDLE                Image;
+
+  if (DriverFile == NULL) {
+    return STATUS_INVALID_PARAMETER;
+  }
+  if (MountDriverLoaded (DriverFile)) {
+    return EFI_SUCCESS;
+  }
+
+  Status = MountBuildDriverDevicePath (DriverFile, &Dp);
+  if (EFI_ERROR (Status)) {
+    Print (L"MOUNT: error - cannot locate self directory (%r)\n", Status);
+    return STATUS_DRIVER_MISSING;
+  }
+  Status = gBS->LoadImage (FALSE, gImageHandle, Dp, NULL, 0, &Image);
+  FreePool (Dp);
+  if ((Status == EFI_NOT_FOUND) ||
+      (Status == EFI_LOAD_ERROR) ||
+      (Status == EFI_INVALID_PARAMETER))
+  {
+    Print (L"MOUNT: error - %s not found (get it from efi.akeo.ie)\n", DriverFile);
+    DEBUG ((DEBUG_INFO, "MOUNT: driver file missing\n"));
+    return STATUS_DRIVER_MISSING;
+  }
+  if (Status == EFI_SECURITY_VIOLATION) {
+    Print (L"MOUNT: error - driver blocked by Secure Boot\n");
+    DEBUG ((DEBUG_INFO, "MOUNT: driver blocked by Secure Boot\n"));
+    return STATUS_SECURE_BOOT;
+  }
+  if (EFI_ERROR (Status)) {
+    Print (L"MOUNT: error - LoadImage %s failed (%r)\n", DriverFile, Status);
+    return STATUS_DRIVER_MISSING;
+  }
+  // A driver image returns from StartImage once its entry point has
+  // registered DriverBinding; it does not "run" like an app.
+  Status = gBS->StartImage (Image, NULL, NULL);
+  if (EFI_ERROR (Status)) {
+    Print (L"MOUNT: error - StartImage failed (%r)\n", Status);
+    DEBUG ((DEBUG_INFO, "MOUNT: StartImage failed (%r)\n", Status));
+    // Do not leave a resident image whose DriverBinding never started.
+    gBS->UnloadImage (Image);
+    return STATUS_DRIVER_MISSING;
+  }
+  Print (L"MOUNT: driver %s loaded\n", DriverFile);
+  DEBUG ((DEBUG_INFO, "MOUNT: driver %S loaded\n", DriverFile));
+  return EFI_SUCCESS;
+}
+
 // Full `mount -<FORMAT>` flow: load the format's driver (once), reconnect
 // controllers so it binds every matching BlockIo device, refresh the
 // Shell mapping table, and report the volumes that appeared. "Driver
@@ -321,11 +383,9 @@ MountRunFormat (
   IN CONST MOUNT_FORMAT_ENTRY  *Entry
   )
 {
-  EFI_STATUS                Status;
-  EFI_DEVICE_PATH_PROTOCOL  *Dp;
-  EFI_HANDLE                Image;
-  EFI_HANDLE                *OldFs;
-  UINTN                     OldCount;
+  EFI_STATUS  Status;
+  EFI_HANDLE  *OldFs;
+  UINTN       OldCount;
 
   if (Entry == NULL) {
     return STATUS_INVALID_PARAMETER;
@@ -340,57 +400,13 @@ MountRunFormat (
     Print (L"MOUNT: %s driver already loaded\n", Entry->Name);
     DEBUG ((DEBUG_INFO, "MOUNT: %S driver already loaded\n", Entry->Name));
   } else {
-    Status = MountBuildDriverDevicePath (Entry->DriverFile, &Dp);
-    if (EFI_ERROR (Status)) {
-      Print (L"MOUNT: error - cannot locate self directory (%r)\n", Status);
+    Status = MountLoadDriver (Entry->DriverFile);   // prints its own messages
+    if (Status != EFI_SUCCESS) {
       if (OldFs != NULL) {
         FreePool (OldFs);
       }
-      return STATUS_DRIVER_MISSING;
+      return Status;
     }
-    Status = gBS->LoadImage (FALSE, gImageHandle, Dp, NULL, 0, &Image);
-    FreePool (Dp);
-    if ((Status == EFI_NOT_FOUND) ||
-        (Status == EFI_LOAD_ERROR) ||
-        (Status == EFI_INVALID_PARAMETER))
-    {
-      Print (L"MOUNT: error - %s not found (get it from efi.akeo.ie)\n", Entry->DriverFile);
-      DEBUG ((DEBUG_INFO, "MOUNT: driver file missing\n"));
-      if (OldFs != NULL) {
-        FreePool (OldFs);
-      }
-      return STATUS_DRIVER_MISSING;
-    }
-    if (Status == EFI_SECURITY_VIOLATION) {
-      Print (L"MOUNT: error - driver blocked by Secure Boot\n");
-      DEBUG ((DEBUG_INFO, "MOUNT: driver blocked by Secure Boot\n"));
-      if (OldFs != NULL) {
-        FreePool (OldFs);
-      }
-      return STATUS_SECURE_BOOT;
-    }
-    if (EFI_ERROR (Status)) {
-      Print (L"MOUNT: error - LoadImage %s failed (%r)\n", Entry->DriverFile, Status);
-      if (OldFs != NULL) {
-        FreePool (OldFs);
-      }
-      return STATUS_DRIVER_MISSING;
-    }
-    // A driver image returns from StartImage once its entry point has
-    // registered DriverBinding; it does not "run" like an app.
-    Status = gBS->StartImage (Image, NULL, NULL);
-    if (EFI_ERROR (Status)) {
-      Print (L"MOUNT: error - StartImage failed (%r)\n", Status);
-      DEBUG ((DEBUG_INFO, "MOUNT: StartImage failed (%r)\n", Status));
-      // Do not leave a resident image whose DriverBinding never started.
-      gBS->UnloadImage (Image);
-      if (OldFs != NULL) {
-        FreePool (OldFs);
-      }
-      return STATUS_DRIVER_MISSING;
-    }
-    Print (L"MOUNT: driver %s loaded\n", Entry->DriverFile);
-    DEBUG ((DEBUG_INFO, "MOUNT: driver %S loaded\n", Entry->DriverFile));
   }
 
   MapConnectAllControllers ();

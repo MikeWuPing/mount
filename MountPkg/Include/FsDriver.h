@@ -64,6 +64,17 @@ MountBuildDriverDevicePath (
   OUT EFI_DEVICE_PATH_PROTOCOL  **DevicePath
   );
 
+// Load a driver file (relative to the mount.efi directory): dedupe by
+// MountDriverLoaded, LoadImage + StartImage, prints every message itself
+// (errors and the success line). Returns EFI_SUCCESS once the driver's
+// entry point has run; STATUS_DRIVER_MISSING / STATUS_SECURE_BOOT /
+// STATUS_INVALID_PARAMETER otherwise. NOTE: those carry no EFI error bit,
+// so callers must compare against EFI_SUCCESS, not EFI_ERROR().
+EFI_STATUS
+MountLoadDriver (
+  IN CONST CHAR16  *DriverFile
+  );
+
 // Full `mount -<FORMAT>` flow: LoadImage/StartImage the format's driver
 // (deduped by loaded-image path suffix), ConnectController rescan,
 // "map -r" Shell refresh, new-volume report. Returns EFI_SUCCESS even

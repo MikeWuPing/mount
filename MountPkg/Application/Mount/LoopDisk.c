@@ -304,16 +304,23 @@ MountRunIso (
   // the stock firmware stack produces no SimpleFileSystem for it (Task 4
   // negative control), and ConnectController on a handle no driver claims
   // deadlocks this OVMF (Task 9: recursive EfiAcquireLock ASSERT in an FV
-  // driver, vCPU spins in CpuDeadLoop). Keep the loop device so the user
-  // can still bind it after loading the driver, but do not connect.
+  // driver, vCPU spins in CpuDeadLoop). Auto-load the ISO9660 driver here
+  // -- the same chain as `mount -<FORMAT>` -- so `mount -ISO` stays fully
+  // automatic (req: "automatically mount the ISO's filesystem") and the
+  // claimed handle is also immune to that deadlock. Only when the driver
+  // FILE is missing does the flow degrade to the keep-loop + manual
+  // load + map -r recovery.
   if (Iso9660 && !Udf && !MountDriverLoaded (L"drivers\\iso9660_x64.efi")) {
-    Print (L"MOUNT: warn - ISO9660 detected but drivers\\iso9660_x64.efi missing\n");
-    Print (L"MOUNT: loop device kept; load drivers\\iso9660_x64.efi, then map -r\n");
-    DEBUG ((DEBUG_INFO, "MOUNT: no ISO9660 driver, connect skipped\n"));
-    if (OldFs != NULL) {
-      FreePool (OldFs);
+    Status = MountLoadDriver (L"drivers\\iso9660_x64.efi");
+    if (Status != EFI_SUCCESS) {
+      Print (L"MOUNT: warn - ISO9660 detected but drivers\\iso9660_x64.efi missing\n");
+      Print (L"MOUNT: loop device kept; load drivers\\iso9660_x64.efi, then map -r\n");
+      DEBUG ((DEBUG_INFO, "MOUNT: no ISO9660 driver, connect skipped\n"));
+      if (OldFs != NULL) {
+        FreePool (OldFs);
+      }
+      return EFI_SUCCESS;
     }
-    return EFI_SUCCESS;
   }
 
   // Bind the firmware FS stack (PartitionDxe probe, DiskIoDxe, UdfDxe and

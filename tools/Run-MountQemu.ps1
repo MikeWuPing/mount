@@ -8,6 +8,8 @@ param(
   [string]$SecondImage = '',
   [switch]$SecondImageReadOnly,
   [switch]$SecondImageCdrom,
+  [switch]$Window,
+  [switch]$Manual,
   [switch]$NoVersionCheck
 )
 # NOTE: keep comments pure ASCII. PowerShell 5.1 reads BOM-less .ps1 as
@@ -61,11 +63,25 @@ if ($SecondImage) {
 }
 # Proven OVMF launch: no -machine q35, no vars pflash (falls back to the
 # internal UEFI Shell which runs startup.nsh from fs0:), -net none.
-$args = "-m 256M -vga std -net none -display none -serial file:`"$serial`" " +
+# -Window: visible SDL window for human observation; screendump evidence
+# still comes from the monitor framebuffer (window-independent).
+$displayArg = '-display none'
+if ($Window) { $displayArg = '-display sdl' }
+$args = "-m 256M -vga std -net none $displayArg -serial file:`"$serial`" " +
   "-qmp tcp:127.0.0.1:$QmpPort,server,nowait " +
   "-drive if=pflash,format=raw,readonly=on,file=`"$OvmfCode`" " + $driveArgs
 $proc = Start-Process -FilePath $qemu -ArgumentList $args -PassThru `
   -RedirectStandardError $stderrLog -RedirectStandardOutput (Join-Path $runLogs ($stamp + '_stdout.log'))
+if ($Manual) {
+  # Manual mode: launch QEMU only. No scripted drives, no version check,
+  # QEMU keeps running -- the human operates the window by hand. Serial is
+  # still captured for later inspection. startup.nsh should end with a
+  # 'pause' so the Shell> prompt survives for interactive typing.
+  Write-Host "QEMU launched (PID $($proc.Id)) - MANUAL MODE"
+  Write-Host "SERIAL: $serial"
+  Write-Host "Close the QEMU window (or kill PID $($proc.Id)) when done."
+  return
+}
 $py = Join-Path $ProjectRoot 'tools\qmp_drive.py'
 python $py --port $QmpPort --shot-dir $snapshot --qemu-pid $proc.Id --max-shots $MaxShots --script $Script
 if ($LASTEXITCODE -ne 0) {

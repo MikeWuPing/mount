@@ -41,6 +41,7 @@ powershell -ExecutionPolicy Bypass -File tools/Run-MountQemu.ps1 -Script "t30 sc
 - `VERSION.txt` 两行格式（`VERSION=x.y.z` / `BUILD=n`）维护在工程根；mount 是纯 CLI 应用，版本戳改为：启动时向串口 `DEBUG()` 输出 `APP_VERSION=<...>` 并同时 `Print` 到 stdout 首行（技能中"画在界面角落"的要求仅适用 GUI 应用）。
 - **禁止复用旧版本产物**：构建失败、版本头缺失或 `.efi` 缺失时不得运行旧版本；判定运行成功必须串口日志 `APP_VERSION=` 与 `expected_version.txt` 一致。
 - QEMU 已验证的坑（gufile 实证）：本 OVMF 不要加 `-machine q35`；只读盘 ide-hd 拒绝 readonly 节点，要走 virtio-blk；FAT 镜像用无分区 superfloppy，OVMF 直接挂载。
+- QEMU 人工交互：SDL 窗口键盘输入受宿主输入法影响（中文模式吞小写字母、数字透传，表现为"数字能打字母不能打"），手动操作先切英文模式；脚本化验证一律走 QMP sendkey（虚拟 PS/2，免疫宿主输入法）。
 
 ## 架构与技术要点
 
@@ -66,7 +67,7 @@ DSC 关键工程决策直接沿用 guedit/gufile 的验证结论：`DebugLib` �
 
 **已确认：edk2 自带 `MdeModulePkg/Universal/Disk/UdfDxe`，但它只是 UDF/ECMA-167 驱动，不认识纯 ISO9660**（源码中无 CD001/PVD 处理；OvmfPkgX64.fdf 已将其编入固件，EmulatorPkg.fdf 没有）。两个推论：Windows 安装 ISO 从 Win10 起是 UDF 格式，UdfDxe 可识别；Linux 发行版常用的纯 ISO9660/Joliet 镜像则需要 efifs 的 `Iso9660.inf` 补位（efifs 也自带 `Udf.inf`，可替代 UdfDxe，二选一避免重复绑定），这是立项时就要实测确认的风险点。
 
-虚拟块设备是这条路径的核心：mount 打开 ISO 文件（`EFI_FILE_PROTOCOL`），新建一个句柄并在其上安装 `EFI_BLOCK_IO_PROTOCOL`（+ 设备路径），ReadBlocks/WriteBlocks 后端转发为对文件偏移的读（只读场景 WriteBlocks 直接返回只读错误）；随后 `gBS->ConnectController()` 让 PartitionDxe/UdfDxe 绑定，新的 FS 即出现。卸载路径要在实现时同步设计：记录创建的句柄，`mount -u` 时 DisconnectController + UninstallProtocolInterface 并关闭文件。
+虚拟块设备是这条路径的核心：mount 打开 ISO 文件（`EFI_FILE_PROTOCOL`），新建一个句柄并在其上安装 `EFI_BLOCK_IO_PROTOCOL`（+ 设备路径），ReadBlocks/WriteBlocks 后端转发为对文件偏移的读（只读场景 WriteBlocks 直接返回只读错误）；随后 `gBS->ConnectController()` 让 PartitionDxe/UdfDxe 绑定，新的 FS 即出现。卸载路径要在实现时同步设计：记录创建的句柄，`mount -u` 时 DisconnectController + UninstallProtocolInterface 并关闭文件。**loop 设备本体在常驻驱动 LoopDxe 中**（`drivers\loop_x64.efi`，`MOUNT_LOOP_FACTORY_PROTOCOL`，mount 首次用时自动加载），这是挂载在 mount.efi 退出后仍存活的前提；嗅探到纯 ISO9660 时 mount 自动加载 `drivers\iso9660_x64.efi`，无需手工 `load`（2026-08-21 起）。
 
 ### 格式扩展框架（mount -<格式>）
 
