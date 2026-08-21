@@ -243,6 +243,12 @@ v1 范围（Phase 0~3）全部关闭；Phase 4（ext4/btrfs/xfs 等格式逐个�
 - **新 QEMU 坑（人工交互场景）**：SDL 窗口键盘输入受宿主输入法影响——中文输入法处于中文模式时吞掉小写字母（进拼音组字缓冲）、数字透传，表现为"数字能打字母不能打"；切英文模式（Shift/中英切换）即恢复。自动化注入走 QMP sendkey（虚拟 PS/2），天然免疫宿主输入法，QEMU 按键自动重复由 guest PS/2 驱动产生（按住键会刷屏）。
 - **新坑（宿主侧）**：Windows 双击 ISO 会自动挂载为虚拟光驱（Explorer 弹 I: 盘），挂载句柄锁住 ISO 文件，导致构建删 qemu_disk 失败（Remove-Item IOException）。处理：Shell.Application Eject 弹出虚拟光驱即释放；与 QEMU 无关，但会阻塞 Build-Mount.ps1。
 
+### v1.0.0 发布（2026-08-21）
+
+- **版本定稿 1.0.0**（BUILD 归零重计）。发布闸门全量回归 6 场景全绿（builds 1.0.0+1~+6）：selftest ALL PASS、`-h` 帮助（Author: Mike Wu）、无参列表（EXT4 `[tested]`）、`-NTFS`（MOUNTTEST / NTFS-MOUNT-OK）、`-ISO` ISO9660（自动加载驱动 / ISO9660-MOUNT-OK）、`-ISO` UDF（UdfDxe / UDF-MOUNT-OK）。
+- **公仓上线**：https://github.com/MikeWuPing/mount（PUBLIC，master）。许可证：自有代码 **PolyForm Noncommercial 1.0.0**（LICENSE，含 Required Notice），`drivers/` 5 个 efifs 二进制保持 GPLv3+（来源/SHA256/源码提供见 drivers/README.md）；中英双 README 互链。
+- 发布后迭代项（已记录）：btrfs/xfs 实测、Phase 5 端到端（>4GiB ISO NTFS 中转）、efifs 源码化（用户决策推迟）。
+
 ### Phase 4 ext4 实测（2026-08-21，build 0.1.0+65）
 
 - **测试资产**：`test_images/mkext4img.py`——纯 Python 手写的最小 ext4 镜像生成器（本机无 WSL/Docker/mkfs，且禁止安装；沿用 mkfatimg.py 的"确定性手写镜像"路线）。8MiB、1K 块、单块组，feature 保守（compat=FILE_TYPE、incompat=EXTENTS，无 journal/metadata_csum/64bit/flex_bg）。产物 `test_images/ext4_test.img` 不入库。
