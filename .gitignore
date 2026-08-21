@@ -21,3 +21,6 @@ test_images/*.img
 # QEMU smoke test transient assets
 qemu_disk.img
 qemu_disk_smoke/
+
+# 需求文档仅本地（不出现在公仓）
+req.md
