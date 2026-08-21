@@ -24,3 +24,6 @@ qemu_disk_smoke/
 
 # 需求文档仅本地（不出现在公仓）
 req.md
+
+# 发布打包产物（本地生成，仅上传到 GitHub Release，不入库）
+dist/
