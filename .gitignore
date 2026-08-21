@@ -27,3 +27,6 @@ req.md
 
 # 发布打包产物（本地生成，仅上传到 GitHub Release，不入库）
 dist/
+
+# 知乎发布材料（文章/题图/转换脚本，不入库）
+docs/zhihu/
