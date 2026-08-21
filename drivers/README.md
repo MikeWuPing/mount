@@ -35,15 +35,16 @@ subsystem 11 (EFI boot service driver).
 e009f02f25b9c5ad3beaf0d3a04f89042985eea1d90187b888130a708c35ca61 *ext2_x64.efi
 f96b897f49aa43fdbbc6162d7e252acff36feeaad3ca798956a0cf90ede471b0 *iso9660_x64.efi
 59c37d5026ca14553a158939e3f2cf20286b6135a713a62c08b569ac9caedcb7 *ntfs_x64.efi
-bf09c7808d9585ac03f0f61d8e5e08065ce4f2ada26d4c2671a043f3a7fe65a6 *udf_x64.efi
 f75d595d8037d0f5612b4eaec2d6f4a581353530a792d904c2c6988d358e07f6 *xfs_x64.efi
 ```
 
 ## Format mapping notes
 
 - `ext2_x64.efi` is the GRUB ext2 module; it also covers ext3/ext4 read-only.
-- `udf_x64.efi` overlaps with edk2's UdfDxe; only one should bind a given UDF
-  volume (deployment avoids loading both onto the same handle).
+- UDF volumes are covered by the firmware's built-in edk2 UdfDxe (proven on
+  the loop device, Task 9); no efifs UDF driver is vendored. If a target
+  firmware ever lacks UdfDxe, fetch `udf_x64.efi` from the efifs release
+  above and add a `mount -UDF` format-table row.
 
 ## loop_x64.efi is NOT from efifs
 
