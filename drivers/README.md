@@ -3,7 +3,9 @@
 These binaries are vendored deployment artifacts for the mount project. They are
 loaded at runtime by `mount.efi` (`LoadImage` + `StartImage`) to add read-only
 file system support to the firmware, and are intentionally committed to this
-repository until we switch to building the drivers from source.
+repository. DECISION (2026-08-21): source-ification of these binaries (building
+efifs from source under VS2019) is DEFERRED until after the project wrap-up and
+release; revisit only then.
 
 ## Origin
 

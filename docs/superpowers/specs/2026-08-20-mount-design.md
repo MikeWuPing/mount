@@ -241,6 +241,12 @@ v1 范围（Phase 0~3）全部关闭；Phase 4（ext4/btrfs/xfs 等格式逐个�
   - `win10_iot.iso`（Windows 10 IoT Core，710MB，UDF bridge：BEA01/NSR02+CD001）：零外部驱动，固件 UdfDxe 直接绑定 loop 设备，`fs1:` 卷标 `AMBM_x86FREO_EN-US_DV5`，含 `Windows_10_IoT_Core_for_Mbm.msi`（743MB）可列出。
   - `Windows_10.iso`（4.98GB，UDF）：超过 FAT32 单文件 4GiB−1 上限，无法放入启动 FAT 卷——Phase 5 的 NTFS 中转路径（`mount -NTFS` 先挂 NTFS 数据盘再 `mount -ISO fs3:\win10.iso`）是唯一可行方案，已记录于 §3。
 - **新 QEMU 坑（人工交互场景）**：SDL 窗口键盘输入受宿主输入法影响——中文输入法处于中文模式时吞掉小写字母（进拼音组字缓冲）、数字透传，表现为"数字能打字母不能打"；切英文模式（Shift/中英切换）即恢复。自动化注入走 QMP sendkey（虚拟 PS/2），天然免疫宿主输入法，QEMU 按键自动重复由 guest PS/2 驱动产生（按住键会刷屏）。
+- **新坑（宿主侧）**：Windows 双击 ISO 会自动挂载为虚拟光驱（Explorer 弹 I: 盘），挂载句柄锁住 ISO 文件，导致构建删 qemu_disk 失败（Remove-Item IOException）。处理：Shell.Application Eject 弹出虚拟光驱即释放；与 QEMU 无关，但会阻塞 Build-Mount.ps1。
+
+### 2026-08-21 范围决策
+
+- **efifs 等二进制驱动的源码化整体推迟**至项目收尾、发布之后（用户决策，2026-08-21）：当前继续使用 efi.akeo.ie 预编译件 + README 的 GPLv3 源码指向，不投入 VS2019 工具链适配。`drivers/README.md` 已同步标注。
+- `udf_x64.efi` 已删除（无引用、UDF 由固件 UdfDxe 覆盖，提交 0ae7b40）。
 
 ## 12. 需求追踪
 
