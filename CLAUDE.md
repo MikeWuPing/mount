@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 当前状态
 
-v1 已完成（Phase 0~3）：`mount -NTFS`、`mount -ISO <file>`、无参列表/帮助、自检均通过 QEMU 闭环验证，证据保留在 `run_logs/` 与 `snapshot/`。Phase 4（ext4/btrfs/xfs 等更多格式实测）为后续迭代。
+v1 已完成（Phase 0~3）：`mount -NTFS`、`mount -ISO <file>`、无参列表/帮助、自检均通过 QEMU 闭环验证，证据保留在 `run_logs/` 与 `snapshot/`。Phase 4 已点亮 EXT4（Tested=TRUE，测试资产 `test_images/mkext4img.py`）；btrfs/xfs 实测为后续迭代。
 
 ## 项目概述
 

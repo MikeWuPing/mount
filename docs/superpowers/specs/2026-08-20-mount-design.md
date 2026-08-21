@@ -243,6 +243,13 @@ v1 范围（Phase 0~3）全部关闭；Phase 4（ext4/btrfs/xfs 等格式逐个�
 - **新 QEMU 坑（人工交互场景）**：SDL 窗口键盘输入受宿主输入法影响——中文输入法处于中文模式时吞掉小写字母（进拼音组字缓冲）、数字透传，表现为"数字能打字母不能打"；切英文模式（Shift/中英切换）即恢复。自动化注入走 QMP sendkey（虚拟 PS/2），天然免疫宿主输入法，QEMU 按键自动重复由 guest PS/2 驱动产生（按住键会刷屏）。
 - **新坑（宿主侧）**：Windows 双击 ISO 会自动挂载为虚拟光驱（Explorer 弹 I: 盘），挂载句柄锁住 ISO 文件，导致构建删 qemu_disk 失败（Remove-Item IOException）。处理：Shell.Application Eject 弹出虚拟光驱即释放；与 QEMU 无关，但会阻塞 Build-Mount.ps1。
 
+### Phase 4 ext4 实测（2026-08-21，build 0.1.0+65）
+
+- **测试资产**：`test_images/mkext4img.py`——纯 Python 手写的最小 ext4 镜像生成器（本机无 WSL/Docker/mkfs，且禁止安装；沿用 mkfatimg.py 的"确定性手写镜像"路线）。8MiB、1K 块、单块组，feature 保守（compat=FILE_TYPE、incompat=EXTENTS，无 journal/metadata_csum/64bit/flex_bg）。产物 `test_images/ext4_test.img` 不入库。
+- **生成器两处 bug 由 QEMU 实测揪出**（libmagic 全认、efifs/GRUB 拒绝——GRUB 校验更严）：superblock 特性字段整体偏移 2 字节（漏写 `s_block_group_nr`），inode extent 条目写在 `0x2C` 而非 `0x34`（覆盖 extent 头 max/generation）。均已修复，inspect 增加"沿 inode 表走读"路径（superblock→GDT→inode→extent→数据块）防回归。
+- **结果**：`mount -EXT4` 全绿——驱动自动加载、`fs1:` 卷标 `EXT4TEST`、`type fs1:\marker.txt` 读出 `EXT4-MOUNT-OK`，版本断言一致。**EXT4 Tested=TRUE**（FsDriver.c 格式表）。
+- **边界说明**：Tested 标志覆盖本镜像的保守特性集；真实世界 ext4 卷带 metadata_csum/64bit/flex_bg/journal 等特性，efifs（GRUB）对其中一部分支持、一部分拒读——拿到真实卷镜像后仍需逐卷验证（记为 Phase 4 延伸项）。
+
 ### 2026-08-21 范围决策
 
 - **efifs 等二进制驱动的源码化整体推迟**至项目收尾、发布之后（用户决策，2026-08-21）：当前继续使用 efi.akeo.ie 预编译件 + README 的 GPLv3 源码指向，不投入 VS2019 工具链适配。`drivers/README.md` 已同步标注。

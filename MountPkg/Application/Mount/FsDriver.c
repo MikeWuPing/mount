@@ -30,10 +30,11 @@
 #define MOUNT_MAX_PATH  256
 
 // Notes are user-visible (mount / mount -?): English only (req 9).
-// NTFS Tested=TRUE per the Task 4 Phase 0 QEMU evidence.
+// NTFS Tested=TRUE per the Task 4 Phase 0 QEMU evidence; EXT4 Tested=TRUE
+// per the Phase 4 run (2026-08-21, hand-built ext4 image, marker read OK).
 STATIC CONST MOUNT_FORMAT_ENTRY mFormats[] = {
   { L"NTFS",  L"drivers\\ntfs_x64.efi",  L"efifs, read-only",                      TRUE  },
-  { L"EXT4",  L"drivers\\ext2_x64.efi",  L"efifs ext2 covers ext2/3/4, read-only", FALSE },
+  { L"EXT4",  L"drivers\\ext2_x64.efi",  L"efifs ext2 covers ext2/3/4, read-only", TRUE  },
   { L"BTRFS", L"drivers\\btrfs_x64.efi", L"efifs, read-only; RAID/zstd may fail",  FALSE },
   { L"XFS",   L"drivers\\xfs_x64.efi",   L"efifs, read-only; v5/CRC TBD",          FALSE },
 };
